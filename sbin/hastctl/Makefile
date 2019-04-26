@@ -13,7 +13,7 @@ SRCS+=	hast_checksum.c hast_compression.c hast_proto.c hastctl.c
 SRCS+=	lzf.c
 SRCS+=	metadata.c
 SRCS+=	nv.c
-SRCS+=	parse.y pjdlog.c
+SRCS+=	parse.y 
 SRCS+=	proto.c proto_common.c proto_uds.c
 SRCS+=	token.l
 SRCS+=	subr.c
@@ -33,7 +33,7 @@ CFLAGS+=-DINET6
 CFLAGS+=-DYY_NO_UNPUT
 CFLAGS+=-DYY_NO_INPUT
 
-LIBADD=	md util
+LIBADD=	md util pjdlog
 
 YFLAGS+=-v
 

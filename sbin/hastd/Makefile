@@ -27,12 +27,11 @@ CFLAGS+=-I${.CURDIR}
 CFLAGS+=-DHAVE_CAPSICUM
 CFLAGS+=-DPROTO_TCP_DEFAULT_PORT=8457
 CFLAGS+=-DINET
-CFLAGS+=-L/lib/libpjdlog
 .if ${MK_INET6_SUPPORT} != "no"
 CFLAGS+=-DINET6
 .endif
 
-LIBADD=	geom md pthread util
+LIBADD=	geom md pthread util pjdlog
 
 YFLAGS+=-v
 
