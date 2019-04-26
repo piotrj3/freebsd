@@ -15,6 +15,7 @@ DIRDEPS = \
 	lib/libsbuf \
 	lib/libthr \
 	lib/libutil \
+	lib/libpjdlog	\
 	usr.bin/yacc.host \
 
 
