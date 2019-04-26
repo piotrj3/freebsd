@@ -42,7 +42,7 @@ __FBSDID("$FreeBSD: releng/12.0/sbin/hastd/activemap.c 326276 2017-11-27 15:37:1
 #include <stdlib.h>
 #include <string.h>
 
-#include <lib/pjdlog.h>
+#include "lib/libpjdlog/pjdlog.h"
 
 #include "activemap.h"
 
