@@ -9,7 +9,7 @@ SRCS=	ebuf.c
 SRCS+=	hast_compression.c hast_proto.c hast_snmp.c
 SRCS+=	lzf.c
 SRCS+=	nv.c
-SRCS+=	parse.y pjdlog.c
+SRCS+=	parse.y
 SRCS+=	proto.c proto_common.c proto_uds.c
 SRCS+=	token.l
 SRCS+=	y.tab.h
@@ -19,6 +19,7 @@ NO_WFORMAT=
 NO_WCAST_ALIGN=
 NO_WMISSING_VARIABLE_DECLARATIONS=
 CFLAGS+=-I${SRCTOP}/sbin/hastd
+CFLAGS+=-I${SRCTOP}/lib/libpjdlog
 CFLAGS+=-DHAVE_CAPSICUM
 CFLAGS+=-DINET
 .if ${MK_INET6_SUPPORT} != "no"
@@ -28,7 +29,7 @@ CFLAGS+=-DINET6
 CFLAGS+=-DYY_NO_UNPUT
 CFLAGS+=-DYY_NO_INPUT
 
-LIBADD=	util
+LIBADD=	util pjdlog
 
 XSYM=	begemotHast
 DEFS=	${MOD}_tree.def
