@@ -1,8 +1,7 @@
 #
 # (c) 2012 WHEEL Systems Sp. z o.o.
 #
-
-FUDO_BUILD_PIC=yes
+.include <bsd.own.mk>
 
 LIB=	pjdlog
 
@@ -22,5 +21,3 @@ LDADD+=	${SYSLIBS}/libc.a
 WARNS=	6
 
 .include <bsd.lib.mk>
-
-${OBJS}: ${LDADD}
