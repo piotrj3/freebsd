@@ -1,6 +1,4 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
- *
  * Copyright (c) 2009-2010 The FreeBSD Foundation
  * Copyright (c) 2011 Pawel Jakub Dawidek <pjd@FreeBSD.org>
  * All rights reserved.
@@ -29,7 +27,7 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  *
- * $FreeBSD: releng/12.0/lib/libpjdlog/pjdlog.h 326219 2017-11-26 02:00:33Z pfg $
+ * $FreeBSD: head/sbin/hastd/pjdlog.h 228695 2011-12-18 20:40:19Z pjd $
  */
 
 #ifndef	_PJDLOG_H_
@@ -39,12 +37,16 @@
 
 #include <errno.h>
 #include <stdarg.h>
+#include <stdint.h>
 #include <sysexits.h>
 #include <syslog.h>
+
+#include <nv.h>
 
 #define	PJDLOG_MODE_STD		0
 #define	PJDLOG_MODE_SYSLOG	1
 #define	PJDLOG_MODE_SOCK	2
+#define	PJDLOG_MODE_NV		3
 
 void pjdlog_init(int mode);
 void pjdlog_fini(void);
@@ -52,10 +54,11 @@ void pjdlog_fini(void);
 void pjdlog_mode_set(int mode);
 int pjdlog_mode_get(void);
 
-#ifdef notyet
 void pjdlog_sock_set(int sock);
 int pjdlog_sock_get(void);
-#endif
+
+void pjdlog_type_set(int type);
+int pjdlog_type_get(void);
 
 void pjdlog_debug_set(int level);
 int pjdlog_debug_get(void);
@@ -66,6 +69,9 @@ const char *pjdlog_prefix_get(void);
 void pjdlog_prefix_push(const char *fmt, ...) __printflike(1, 2);
 void pjdlogv_prefix_push(const char *fmt, va_list ap) __printflike(1, 0);
 void pjdlog_prefix_pop(void);
+
+void pjdlog_nvlist_set(nvlist_t *nvl);
+nvlist_t *pjdlog_nvlist_get(void);
 
 void _pjdlogv_common(const char *func, const char *file, int line, int loglevel,
     int debuglevel, int error, const char *fmt, va_list ap) __printflike(7, 0);
@@ -80,9 +86,7 @@ void _pjdlog_exit(const char *func, const char *file, int line, int exitcode,
 void _pjdlog_abort(const char *func, const char *file, int line, int error,
     const char *failedexpr, const char *fmt, ...) __printflike(6, 7) __dead2;
 
-#ifdef notyet
 int pjdlog_receive(int sock);
-#endif
 
 #define	pjdlogv_common(loglevel, debuglevel, error, fmt, ap)		\
 	_pjdlogv_common(__func__, __FILE__, __LINE__, (loglevel),	\
@@ -153,24 +157,64 @@ int pjdlog_receive(int sock);
 		    #expr, __func__);					\
 	}								\
 } while (0)
+#define	PJDLOG_REVERIFY(expr, ...)	do {				\
+	if (!(expr)) {							\
+		_pjdlog_abort(__func__, __FILE__, __LINE__, errno,	\
+		    #expr, __VA_ARGS__);				\
+	}								\
+} while (0)
+
+#define	_PJDLOG_VERIFY3(left, op, right, format, type)	do {		\
+	const type __left = (type)(intptr_t)(left);			\
+	const type __right = (type)(intptr_t)(right);			\
+									\
+	if (!(__left op __right)) {					\
+		_pjdlog_abort(__func__, __FILE__, __LINE__, -1,		\
+		    NULL, "Assertion failed: (%s) (" format " %s " format ").", \
+		    #left " " #op " " #right, __left, #op, __right);	\
+	}								\
+} while (0)
+
+#define	PJDLOG_VERIFY3S(left, op, right)				\
+	_PJDLOG_VERIFY3(left, op, right, "%jd", intmax_t)
+#define	PJDLOG_VERIFY3U(left, op, right)				\
+	_PJDLOG_VERIFY3(left, op, right, "%ju", uintmax_t)
+#define	PJDLOG_VERIFY3P(left, op, right)				\
+	_PJDLOG_VERIFY3(left, op, right, "%p", void *)
+
+#define	PJDLOG_VERIFY3STR(left, op, right)	do {			\
+	const char *__left = (left);					\
+	const char *__right = (right);					\
+									\
+	if (!(strcmp(__left, __right) op 0)) {				\
+		_pjdlog_abort(__func__, __FILE__, __LINE__, -1,		\
+		    NULL, "Assertion failed: (%s) (\"%s\" %s \"%s\").", \
+		    #left " " #op " " #right, __left, #op, __right);	\
+	}								\
+} while (0)
+
 #define	PJDLOG_ABORT(...)	_pjdlog_abort(__func__, __FILE__,	\
 				    __LINE__, -1, NULL, __VA_ARGS__)
+#define	PJDLOG_EABORT(...)	_pjdlog_abort(__func__, __FILE__,	\
+				    __LINE__, errno, NULL, __VA_ARGS__)
 #ifdef NDEBUG
 #define	PJDLOG_ASSERT(expr)	do { } while (0)
 #define	PJDLOG_RASSERT(...)	do { } while (0)
+#define	PJDLOG_EASSERT(...)	do { } while (0)
+#define	PJDLOG_REASSERT(...)	do { } while (0)
+#define	PJDLOG_ASSERT3S(...)	do { } while (0)
+#define	PJDLOG_ASSERT3U(...)	do { } while (0)
+#define	PJDLOG_ASSERT3P(...)	do { } while (0)
+#define	PJDLOG_ASSERT3STR(...)	do { } while (0)
 #else
-#define	PJDLOG_ASSERT(expr)	do {					\
-	if (!(expr)) {							\
-		_pjdlog_abort(__func__, __FILE__, __LINE__, -1, #expr,	\
-		    __func__);						\
-	}								\
-} while (0)
-#define	PJDLOG_RASSERT(expr, ...)	do {				\
-	if (!(expr)) {							\
-		_pjdlog_abort(__func__, __FILE__, __LINE__, -1, #expr,	\
-		    __VA_ARGS__);					\
-	}								\
-} while (0)
+#define	PJDLOG_ASSERT(expr)		PJDLOG_VERIFY(expr)
+#define	PJDLOG_RASSERT(expr, ...)	PJDLOG_RVERIFY((expr), __VA_ARGS__)
+#define	PJDLOG_EASSERT(expr)		PJDLOG_EVERIFY(expr)
+#define	PJDLOG_REASSERT(expr, ...)	PJDLOG_REVERIFY((expr), __VA_ARGS__)
+#define	PJDLOG_ASSERT3S(left, op, right)	PJDLOG_VERIFY3S(left, op, right)
+#define	PJDLOG_ASSERT3U(left, op, right)	PJDLOG_VERIFY3U(left, op, right)
+#define	PJDLOG_ASSERT3P(left, op, right)	PJDLOG_VERIFY3P(left, op, right)
+#define	PJDLOG_ASSERT3STR(left, op, right)	PJDLOG_VERIFY3STR(left, op, right)
 #endif
 
 #endif	/* !_PJDLOG_H_ */

@@ -1,19 +1,26 @@
 #
-# $FreeBSD: releng/12.0/lib/libpjdlog/Makefile 298107 2016-04-16 07:45:30Z gjb $
+# (c) 2012 WHEEL Systems Sp. z o.o.
 #
 
-PACKAGE=lib${LIB}
-SHLIBDIR?=	/lib
+FUDO_BUILD_PIC=yes
 
-.include <bsd.own.mk>
+LIB=	pjdlog
 
-LIB=		pjdlog
-SRCS=		pjdlog.c
+SRCS=	pjdlog.c
 
-SHLIB_MAJOR=	0
+CFLAGS+=-fPIC
 
 CFLAGS+=-I${.CURDIR}
 
-LIBADD=	util
+CFLAGS+=-I${.CURDIR}/../libnv
+
+CFLAGS+=-I${.CURDIR}/../librobustio
+LDADD+=	${.CURDIR}/../librobustio/librobustio.a
+
+LDADD+=	${SYSLIBS}/libc.a
+
+WARNS=	6
 
 .include <bsd.lib.mk>
+
+${OBJS}: ${LDADD}

@@ -1,6 +1,4 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
- *
  * Copyright (c) 2009-2010 The FreeBSD Foundation
  * Copyright (c) 2011 Pawel Jakub Dawidek <pjd@FreeBSD.org>
  * All rights reserved.
@@ -31,7 +29,7 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD: releng/12.0/lib/libpjdlog/pjdlog.c 335893 2018-07-03 15:48:34Z br $");
+__FBSDID("$FreeBSD: head/sbin/hastd/pjdlog.c 225773 2011-09-27 06:43:51Z pjd $");
 
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -52,9 +50,8 @@ __FBSDID("$FreeBSD: releng/12.0/lib/libpjdlog/pjdlog.c 335893 2018-07-03 15:48:3
 #include <syslog.h>
 #include <unistd.h>
 
-#ifdef notyet
+#include <nv.h>
 #include <robustio.h>
-#endif
 
 #include "pjdlog.h"
 
@@ -72,9 +69,10 @@ __FBSDID("$FreeBSD: releng/12.0/lib/libpjdlog/pjdlog.c 335893 2018-07-03 15:48:3
 #define	PJDLOG_INITIALIZED		2
 
 static int pjdlog_initialized = PJDLOG_NEVER_INITIALIZED;
-static int pjdlog_mode, pjdlog_debug_level, pjdlog_sock;
+static int pjdlog_mode, pjdlog_debug_level, pjdlog_sock, pjdlog_type;
 static int pjdlog_prefix_current;
 static char pjdlog_prefix[PJDLOG_PREFIX_STACK][PJDLOG_PREFIX_MAXSIZE];
+static nvlist_t *pjdlog_nvlist;
 
 static int
 pjdlog_printf_arginfo_humanized_number(const struct printf_info *pi __unused,
@@ -226,12 +224,8 @@ pjdlog_init(int mode)
 
 	assert(pjdlog_initialized == PJDLOG_NEVER_INITIALIZED ||
 	    pjdlog_initialized == PJDLOG_NOT_INITIALIZED);
-#ifdef notyet
 	assert(mode == PJDLOG_MODE_STD || mode == PJDLOG_MODE_SYSLOG ||
-	    mode == PJDLOG_MODE_SOCK);
-#else
-	assert(mode == PJDLOG_MODE_STD || mode == PJDLOG_MODE_SYSLOG);
-#endif
+	    mode == PJDLOG_MODE_SOCK || mode == PJDLOG_MODE_NV);
 
 	saved_errno = errno;
 
@@ -252,9 +246,11 @@ pjdlog_init(int mode)
 	if (mode == PJDLOG_MODE_SYSLOG)
 		openlog(NULL, LOG_PID | LOG_NDELAY, LOG_LOCAL0);
 	pjdlog_mode = mode;
+	pjdlog_type = 0;
 	pjdlog_debug_level = 0;
 	pjdlog_prefix_current = 0;
 	pjdlog_prefix[0][0] = '\0';
+	pjdlog_nvlist = NULL;
 
 	pjdlog_initialized = PJDLOG_INITIALIZED;
 	pjdlog_sock = -1;
@@ -276,6 +272,7 @@ pjdlog_fini(void)
 
 	pjdlog_initialized = PJDLOG_NOT_INITIALIZED;
 	pjdlog_sock = -1;
+	pjdlog_nvlist = NULL;
 
 	errno = saved_errno;
 }
@@ -292,24 +289,21 @@ pjdlog_mode_set(int mode)
 	int saved_errno;
 
 	assert(pjdlog_initialized == PJDLOG_INITIALIZED);
-#ifdef notyet
 	assert(mode == PJDLOG_MODE_STD || mode == PJDLOG_MODE_SYSLOG ||
-	    mode == PJDLOG_MODE_SOCK);
-#else
-	assert(mode == PJDLOG_MODE_STD || mode == PJDLOG_MODE_SYSLOG);
-#endif
+	    mode == PJDLOG_MODE_SOCK || mode == PJDLOG_MODE_NV);
 
 	if (pjdlog_mode == mode)
 		return;
 
 	saved_errno = errno;
 
-	if (mode == PJDLOG_MODE_SYSLOG)
-		openlog(NULL, LOG_PID | LOG_NDELAY, LOG_DAEMON);
-	else if (mode == PJDLOG_MODE_STD)
+	if (pjdlog_mode == PJDLOG_MODE_SYSLOG)
 		closelog();
 
-	if (mode != PJDLOG_MODE_SOCK)
+	if (mode == PJDLOG_MODE_SYSLOG)
+		openlog(NULL, LOG_PID | LOG_NDELAY, LOG_DAEMON);
+
+	if (mode != PJDLOG_MODE_SOCK && mode != PJDLOG_MODE_NV)
 		pjdlog_sock = -1;
 
 	pjdlog_mode = mode;
@@ -330,37 +324,59 @@ pjdlog_mode_get(void)
 	return (pjdlog_mode);
 }
 
-#ifdef notyet
 /*
- * Sets socket number to use for PJDLOG_MODE_SOCK mode.
+ * Sets socket number to use for PJDLOG_MODE_SOCK and PJDLOG_MODE_NV modes.
  */
 void
 pjdlog_sock_set(int sock)
 {
 
 	assert(pjdlog_initialized == PJDLOG_INITIALIZED);
-	assert(pjdlog_mode == PJDLOG_MODE_SOCK);
+	assert(pjdlog_mode == PJDLOG_MODE_SOCK ||
+	    pjdlog_mode == PJDLOG_MODE_NV);
 	assert(sock >= 0);
 
 	pjdlog_sock = sock;
 }
-#endif
 
-#ifdef notyet
 /*
- * Returns socket number used for PJDLOG_MODE_SOCK mode.
+ * Returns socket number used for PJDLOG_MODE_SOCK and PJDLOG_MODE_NV modes.
  */
 int
 pjdlog_sock_get(void)
 {
 
 	assert(pjdlog_initialized == PJDLOG_INITIALIZED);
-	assert(pjdlog_mode == PJDLOG_MODE_SOCK);
+	assert(pjdlog_mode == PJDLOG_MODE_SOCK ||
+	    pjdlog_mode == PJDLOG_MODE_NV);
 	assert(pjdlog_sock >= 0);
 
 	return (pjdlog_sock);
 }
-#endif
+
+/*
+ * Set message type.
+ */
+void
+pjdlog_type_set(int type)
+{
+
+	assert(pjdlog_initialized == PJDLOG_INITIALIZED);
+
+	pjdlog_type = type;
+}
+
+/*
+ * Return current message type.
+ */
+int
+pjdlog_type_get(void)
+{
+
+	assert(pjdlog_initialized == PJDLOG_INITIALIZED);
+
+	return (pjdlog_type);
+}
 
 /*
  * Set debug level. All the logs above the level specified here will be
@@ -479,6 +495,32 @@ pjdlog_prefix_pop(void)
 }
 
 /*
+ * Set nvlist which will be send with a message.
+ */
+void
+pjdlog_nvlist_set(nvlist_t *nvl)
+{
+
+	assert(pjdlog_initialized == PJDLOG_INITIALIZED);
+	assert(pjdlog_mode == PJDLOG_MODE_NV);
+
+	pjdlog_nvlist = nvl;
+}
+
+/*
+ * Return current nvlist.
+ */
+nvlist_t *
+pjdlog_nvlist_get(void)
+{
+
+	assert(pjdlog_initialized == PJDLOG_INITIALIZED);
+	assert(pjdlog_mode == PJDLOG_MODE_NV);
+
+	return (pjdlog_nvlist);
+}
+
+/*
  * Convert log level into string.
  */
 static const char *
@@ -538,15 +580,12 @@ pjdlogv_common_single_line(const char *func, const char *file, int line,
 	size_t logs;
 
 	assert(pjdlog_initialized == PJDLOG_INITIALIZED);
-#ifdef notyet
 	assert(pjdlog_mode == PJDLOG_MODE_STD ||
 	    pjdlog_mode == PJDLOG_MODE_SYSLOG ||
-	    pjdlog_mode == PJDLOG_MODE_SOCK);
-#else
-	assert(pjdlog_mode == PJDLOG_MODE_STD ||
-	    pjdlog_mode == PJDLOG_MODE_SYSLOG);
-#endif
-	assert(pjdlog_mode != PJDLOG_MODE_SOCK || pjdlog_sock >= 0);
+	    pjdlog_mode == PJDLOG_MODE_SOCK ||
+	    pjdlog_mode == PJDLOG_MODE_NV);
+	assert((pjdlog_mode != PJDLOG_MODE_SOCK &&
+	    pjdlog_mode != PJDLOG_MODE_NV) || pjdlog_sock >= 0);
 	assert(loglevel == LOG_EMERG || loglevel == LOG_ALERT ||
 	    loglevel == LOG_CRIT || loglevel == LOG_ERR ||
 	    loglevel == LOG_WARNING || loglevel == LOG_NOTICE ||
@@ -561,6 +600,7 @@ pjdlogv_common_single_line(const char *func, const char *file, int line,
 	switch (pjdlog_mode) {
 	case PJDLOG_MODE_STD:
 	case PJDLOG_MODE_SYSLOG:
+	case PJDLOG_MODE_NV:
 		logp = log;
 		logs = sizeof(log);
 		break;
@@ -574,7 +614,7 @@ pjdlogv_common_single_line(const char *func, const char *file, int line,
 
 	*logp = '\0';
 
-	if (pjdlog_mode != PJDLOG_MODE_SOCK) {
+	if (pjdlog_mode != PJDLOG_MODE_SOCK && pjdlog_mode != PJDLOG_MODE_NV) {
 		if (loglevel == LOG_DEBUG) {
 			/* Attach debuglevel if this is debug log. */
 			snprlcat(logp, logs, "[%s%d] ",
@@ -596,7 +636,7 @@ pjdlogv_common_single_line(const char *func, const char *file, int line,
 			snprlcat(logp, logs, "(%s:%d:%s) ", file, line, func);
 	}
 
-	if (pjdlog_mode != PJDLOG_MODE_SOCK) {
+	if (pjdlog_mode != PJDLOG_MODE_SOCK && pjdlog_mode != PJDLOG_MODE_NV) {
 		snprlcat(logp, logs, "%s",
 		    pjdlog_prefix[pjdlog_prefix_current]);
 	}
@@ -609,13 +649,37 @@ pjdlogv_common_single_line(const char *func, const char *file, int line,
 
 	switch (pjdlog_mode) {
 	case PJDLOG_MODE_STD:
-		fprintf(stderr, "%s\n", logp);
-		fflush(stderr);
+	    {
+		FILE *out;
+
+		/*
+		 * We send errors and warning to stderr and the rest to stdout.
+		 */
+		switch (loglevel) {
+		case LOG_EMERG:
+		case LOG_ALERT:
+		case LOG_CRIT:
+		case LOG_ERR:
+		case LOG_WARNING:
+			out = stderr;
+			break;
+		case LOG_NOTICE:
+		case LOG_INFO:
+		case LOG_DEBUG:
+			out = stdout;
+			break;
+		default:
+			assert(!"Invalid loglevel.");
+			abort();	/* XXX: gcc */
+		}
+
+		fprintf(out, "%s\n", logp);
+		fflush(out);
 		break;
+	    }
 	case PJDLOG_MODE_SYSLOG:
 		syslog(loglevel, "%s", logp);
 		break;
-#ifdef notyet
 	case PJDLOG_MODE_SOCK:
 	    {
 		char ack[2];
@@ -631,7 +695,26 @@ pjdlogv_common_single_line(const char *func, const char *file, int line,
 			assert(!"Unable to send log.");
 		break;
 	    }
-#endif
+	case PJDLOG_MODE_NV:
+	    {
+		nvlist_t *nvl;
+		int result;
+		char ack[2];
+
+		nvl = nvlist_create(0);
+		nvlist_add_number(nvl, "type", (uint64_t)pjdlog_type);
+		nvlist_add_number(nvl, "loglevel", (uint64_t)loglevel);
+		nvlist_add_number(nvl, "debuglevel", (uint64_t)debuglevel);
+		nvlist_add_string(nvl, "message", logp);
+		nvlist_add_nvlist(nvl, "nvlist", pjdlog_nvlist);
+		result = nvlist_send(pjdlog_sock, nvl);
+		nvlist_destroy(nvl);
+		if (result == -1)
+			assert(!"Unable to send log.");
+		if (robust_recv(pjdlog_sock, ack, sizeof(ack)) == -1)
+			assert(!"Unable to send log.");
+		break;
+	    }
 	default:
 		assert(!"Invalid mode.");
 	}
@@ -653,7 +736,8 @@ _pjdlogv_common(const char *func, const char *file, int line, int loglevel,
 	assert(pjdlog_initialized == PJDLOG_INITIALIZED);
 	assert(pjdlog_mode == PJDLOG_MODE_STD ||
 	    pjdlog_mode == PJDLOG_MODE_SYSLOG ||
-	    pjdlog_mode == PJDLOG_MODE_SOCK);
+	    pjdlog_mode == PJDLOG_MODE_SOCK ||
+	    pjdlog_mode == PJDLOG_MODE_NV);
 	assert(pjdlog_mode != PJDLOG_MODE_SOCK || pjdlog_sock >= 0);
 	assert(loglevel == LOG_EMERG || loglevel == LOG_ALERT ||
 	    loglevel == LOG_CRIT || loglevel == LOG_ERR ||
@@ -669,7 +753,8 @@ _pjdlogv_common(const char *func, const char *file, int line, int loglevel,
 
 	saved_errno = errno;
 
-	vsnprintf(log, sizeof(log), fmt, ap);
+	/* Just truncate the log if it is too long. */
+	(void)vsnprintf(log, sizeof(log), fmt, ap);
 	logp = log;
 	prvline = NULL;
 
@@ -778,34 +863,92 @@ _pjdlog_abort(const char *func, const char *file, int line,
 	abort();
 }
 
-#ifdef notyet
 /*
  * Receive log from the given socket.
  */
 int
 pjdlog_receive(int sock)
 {
-	char log[PJDLOG_MAX_MSGSIZE];
 	int loglevel, debuglevel;
-	uint16_t dlen;
 
-	if (robust_recv(sock, &dlen, sizeof(dlen)) == -1)
-		return (-1);
+	switch (pjdlog_mode) {
+	case PJDLOG_MODE_SOCK:
+	    {
+		char log[PJDLOG_MAX_MSGSIZE];
+		uint16_t dlen;
 
-	PJDLOG_ASSERT(dlen > 0);
-	PJDLOG_ASSERT(dlen <= PJDLOG_MAX_MSGSIZE - 3);
+		if (robust_recv(sock, &dlen, sizeof(dlen)) == -1)
+			return (-1);
 
-	if (robust_recv(sock, log, (size_t)dlen) == -1)
-		return (-1);
+		PJDLOG_ASSERT(dlen > 0);
+		PJDLOG_ASSERT(dlen <= PJDLOG_MAX_MSGSIZE - 3);
 
-	log[dlen - 1] = '\0';
-	loglevel = log[0];
-	debuglevel = log[1];
-	_pjdlog_common(NULL, NULL, 0, loglevel, debuglevel, -1, "%s", log + 2);
+		if (robust_recv(sock, log, (size_t)dlen) == -1)
+			return (-1);
+
+		log[dlen - 1] = '\0';
+		loglevel = log[0];
+		debuglevel = log[1];
+		_pjdlog_common(NULL, NULL, 0, loglevel, debuglevel, -1, "%s",
+		    log + 2);
+		break;
+	    }
+	case PJDLOG_MODE_STD:
+	case PJDLOG_MODE_SYSLOG:
+	case PJDLOG_MODE_NV:
+	    {
+		uint64_t value;
+		void *cookie;
+		const char *message, *name;
+		nvlist_t *nvl, *nvlist, *previous_nvlist;
+		int nvtype, previous_type, type;
+
+		if ((nvl = nvlist_recv(sock, 0)) == NULL ||
+		    !nvlist_exists_number(nvl, "type") ||
+		    !nvlist_exists_number(nvl, "loglevel") ||
+		    !nvlist_exists_number(nvl, "debuglevel") ||
+		    !nvlist_exists_string(nvl, "message") ||
+		    !nvlist_exists_nvlist(nvl, "nvlist")) {
+			return (-1);
+		}
+
+		type = (int)nvlist_get_number(nvl, "type");
+		loglevel = (int)nvlist_get_number(nvl, "loglevel");
+		debuglevel = (int)nvlist_get_number(nvl, "debuglevel");
+		message = nvlist_get_string(nvl, "message");
+		nvlist = nvlist_take_nvlist(nvl, "nvlist");
+
+		if (pjdlog_nvlist != NULL) {
+			cookie = NULL;
+			while ((name = nvlist_next(pjdlog_nvlist, &nvtype,
+			    &cookie)) != NULL) {
+				if (nvtype != NV_TYPE_NUMBER)
+					continue;
+				value = nvlist_get_number(pjdlog_nvlist, name);
+				nvlist_add_number(nvlist, name, value);
+			}
+		}
+
+		previous_type = pjdlog_type;
+		previous_nvlist = pjdlog_nvlist;
+		pjdlog_type = type;
+		pjdlog_nvlist = nvlist;
+		_pjdlog_common(NULL, NULL, 0, loglevel, debuglevel, -1, "%s",
+		    message);
+		pjdlog_type = previous_type;
+		pjdlog_nvlist = previous_nvlist;
+
+		nvlist_destroy(nvlist);
+		nvlist_destroy(nvl);
+		break;
+	    }
+	default:
+		assert(!"Invalid mode.");
+		break;
+	}
 
 	if (robust_send(sock, "ok", 2) == -1)
 		return (-1);
 
 	return (0);
 }
-#endif
