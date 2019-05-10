@@ -1,0 +1,660 @@
+From 383f49d4b97bf5f433f1450b52ac909ac29d1782 Mon Sep 17 00:00:00 2001
+From: Piotr Jamski <piotrj3@gmail.com>
+Date: Fri, 10 May 2019 14:32:24 +0200
+Subject: [PATCH] Overwrite pjdlog with fudo version from fudo
+
+---
+ lib/libpjdlog/Makefile |  23 ++--
+ lib/libpjdlog/pjdlog.c | 255 ++++++++++++++++++++++++++++++++---------
+ lib/libpjdlog/pjdlog.h |  82 ++++++++++---
+ 3 files changed, 277 insertions(+), 83 deletions(-)
+ mode change 100644 => 100755 lib/libpjdlog/Makefile
+ mode change 100644 => 100755 lib/libpjdlog/pjdlog.c
+ mode change 100644 => 100755 lib/libpjdlog/pjdlog.h
+
+diff --git a/lib/libpjdlog/Makefile b/lib/libpjdlog/Makefile
+old mode 100644
+new mode 100755
+index e866699cf..ea6f4e3ad
+--- a/lib/libpjdlog/Makefile
++++ b/lib/libpjdlog/Makefile
+@@ -1,19 +1,26 @@
+ #
+-# $FreeBSD: releng/12.0/lib/libpjdlog/Makefile 298107 2016-04-16 07:45:30Z gjb $
++# (c) 2012 WHEEL Systems Sp. z o.o.
+ #
+ 
+-PACKAGE=lib${LIB}
+-SHLIBDIR?=	/lib
++FUDO_BUILD_PIC=yes
+ 
+-.include <bsd.own.mk>
++LIB=	pjdlog
+ 
+-LIB=		pjdlog
+-SRCS=		pjdlog.c
++SRCS=	pjdlog.c
+ 
+-SHLIB_MAJOR=	0
++CFLAGS+=-fPIC
+ 
+ CFLAGS+=-I${.CURDIR}
+ 
+-LIBADD=	util
++CFLAGS+=-I${.CURDIR}/../libnv
++
++CFLAGS+=-I${.CURDIR}/../librobustio
++LDADD+=	${.CURDIR}/../librobustio/librobustio.a
++
++LDADD+=	${SYSLIBS}/libc.a
++
++WARNS=	6
+ 
+ .include <bsd.lib.mk>
++
++${OBJS}: ${LDADD}
+diff --git a/lib/libpjdlog/pjdlog.c b/lib/libpjdlog/pjdlog.c
+old mode 100644
+new mode 100755
+index 7d609b61d..4a7d3824e
+--- a/lib/libpjdlog/pjdlog.c
++++ b/lib/libpjdlog/pjdlog.c
+@@ -1,6 +1,4 @@
+ /*-
+- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+- *
+  * Copyright (c) 2009-2010 The FreeBSD Foundation
+  * Copyright (c) 2011 Pawel Jakub Dawidek <pjd@FreeBSD.org>
+  * All rights reserved.
+@@ -31,7 +29,7 @@
+  */
+ 
+ #include <sys/cdefs.h>
+-__FBSDID("$FreeBSD: releng/12.0/lib/libpjdlog/pjdlog.c 335893 2018-07-03 15:48:34Z br $");
++__FBSDID("$FreeBSD: head/sbin/hastd/pjdlog.c 225773 2011-09-27 06:43:51Z pjd $");
+ 
+ #include <sys/types.h>
+ #include <sys/socket.h>
+@@ -52,9 +50,8 @@ __FBSDID("$FreeBSD: releng/12.0/lib/libpjdlog/pjdlog.c 335893 2018-07-03 15:48:3
+ #include <syslog.h>
+ #include <unistd.h>
+ 
+-#ifdef notyet
++#include <nv.h>
+ #include <robustio.h>
+-#endif
+ 
+ #include "pjdlog.h"
+ 
+@@ -72,9 +69,10 @@ __FBSDID("$FreeBSD: releng/12.0/lib/libpjdlog/pjdlog.c 335893 2018-07-03 15:48:3
+ #define	PJDLOG_INITIALIZED		2
+ 
+ static int pjdlog_initialized = PJDLOG_NEVER_INITIALIZED;
+-static int pjdlog_mode, pjdlog_debug_level, pjdlog_sock;
++static int pjdlog_mode, pjdlog_debug_level, pjdlog_sock, pjdlog_type;
+ static int pjdlog_prefix_current;
+ static char pjdlog_prefix[PJDLOG_PREFIX_STACK][PJDLOG_PREFIX_MAXSIZE];
++static nvlist_t *pjdlog_nvlist;
+ 
+ static int
+ pjdlog_printf_arginfo_humanized_number(const struct printf_info *pi __unused,
+@@ -226,12 +224,8 @@ pjdlog_init(int mode)
+ 
+ 	assert(pjdlog_initialized == PJDLOG_NEVER_INITIALIZED ||
+ 	    pjdlog_initialized == PJDLOG_NOT_INITIALIZED);
+-#ifdef notyet
+ 	assert(mode == PJDLOG_MODE_STD || mode == PJDLOG_MODE_SYSLOG ||
+-	    mode == PJDLOG_MODE_SOCK);
+-#else
+-	assert(mode == PJDLOG_MODE_STD || mode == PJDLOG_MODE_SYSLOG);
+-#endif
++	    mode == PJDLOG_MODE_SOCK || mode == PJDLOG_MODE_NV);
+ 
+ 	saved_errno = errno;
+ 
+@@ -252,9 +246,11 @@ pjdlog_init(int mode)
+ 	if (mode == PJDLOG_MODE_SYSLOG)
+ 		openlog(NULL, LOG_PID | LOG_NDELAY, LOG_LOCAL0);
+ 	pjdlog_mode = mode;
++	pjdlog_type = 0;
+ 	pjdlog_debug_level = 0;
+ 	pjdlog_prefix_current = 0;
+ 	pjdlog_prefix[0][0] = '\0';
++	pjdlog_nvlist = NULL;
+ 
+ 	pjdlog_initialized = PJDLOG_INITIALIZED;
+ 	pjdlog_sock = -1;
+@@ -276,6 +272,7 @@ pjdlog_fini(void)
+ 
+ 	pjdlog_initialized = PJDLOG_NOT_INITIALIZED;
+ 	pjdlog_sock = -1;
++	pjdlog_nvlist = NULL;
+ 
+ 	errno = saved_errno;
+ }
+@@ -292,24 +289,21 @@ pjdlog_mode_set(int mode)
+ 	int saved_errno;
+ 
+ 	assert(pjdlog_initialized == PJDLOG_INITIALIZED);
+-#ifdef notyet
+ 	assert(mode == PJDLOG_MODE_STD || mode == PJDLOG_MODE_SYSLOG ||
+-	    mode == PJDLOG_MODE_SOCK);
+-#else
+-	assert(mode == PJDLOG_MODE_STD || mode == PJDLOG_MODE_SYSLOG);
+-#endif
++	    mode == PJDLOG_MODE_SOCK || mode == PJDLOG_MODE_NV);
+ 
+ 	if (pjdlog_mode == mode)
+ 		return;
+ 
+ 	saved_errno = errno;
+ 
++	if (pjdlog_mode == PJDLOG_MODE_SYSLOG)
++		closelog();
++
+ 	if (mode == PJDLOG_MODE_SYSLOG)
+ 		openlog(NULL, LOG_PID | LOG_NDELAY, LOG_DAEMON);
+-	else if (mode == PJDLOG_MODE_STD)
+-		closelog();
+ 
+-	if (mode != PJDLOG_MODE_SOCK)
++	if (mode != PJDLOG_MODE_SOCK && mode != PJDLOG_MODE_NV)
+ 		pjdlog_sock = -1;
+ 
+ 	pjdlog_mode = mode;
+@@ -330,37 +324,59 @@ pjdlog_mode_get(void)
+ 	return (pjdlog_mode);
+ }
+ 
+-#ifdef notyet
+ /*
+- * Sets socket number to use for PJDLOG_MODE_SOCK mode.
++ * Sets socket number to use for PJDLOG_MODE_SOCK and PJDLOG_MODE_NV modes.
+  */
+ void
+ pjdlog_sock_set(int sock)
+ {
+ 
+ 	assert(pjdlog_initialized == PJDLOG_INITIALIZED);
+-	assert(pjdlog_mode == PJDLOG_MODE_SOCK);
++	assert(pjdlog_mode == PJDLOG_MODE_SOCK ||
++	    pjdlog_mode == PJDLOG_MODE_NV);
+ 	assert(sock >= 0);
+ 
+ 	pjdlog_sock = sock;
+ }
+-#endif
+ 
+-#ifdef notyet
+ /*
+- * Returns socket number used for PJDLOG_MODE_SOCK mode.
++ * Returns socket number used for PJDLOG_MODE_SOCK and PJDLOG_MODE_NV modes.
+  */
+ int
+ pjdlog_sock_get(void)
+ {
+ 
+ 	assert(pjdlog_initialized == PJDLOG_INITIALIZED);
+-	assert(pjdlog_mode == PJDLOG_MODE_SOCK);
++	assert(pjdlog_mode == PJDLOG_MODE_SOCK ||
++	    pjdlog_mode == PJDLOG_MODE_NV);
+ 	assert(pjdlog_sock >= 0);
+ 
+ 	return (pjdlog_sock);
+ }
+-#endif
++
++/*
++ * Set message type.
++ */
++void
++pjdlog_type_set(int type)
++{
++
++	assert(pjdlog_initialized == PJDLOG_INITIALIZED);
++
++	pjdlog_type = type;
++}
++
++/*
++ * Return current message type.
++ */
++int
++pjdlog_type_get(void)
++{
++
++	assert(pjdlog_initialized == PJDLOG_INITIALIZED);
++
++	return (pjdlog_type);
++}
+ 
+ /*
+  * Set debug level. All the logs above the level specified here will be
+@@ -478,6 +494,32 @@ pjdlog_prefix_pop(void)
+ 	pjdlog_prefix_current--;
+ }
+ 
++/*
++ * Set nvlist which will be send with a message.
++ */
++void
++pjdlog_nvlist_set(nvlist_t *nvl)
++{
++
++	assert(pjdlog_initialized == PJDLOG_INITIALIZED);
++	assert(pjdlog_mode == PJDLOG_MODE_NV);
++
++	pjdlog_nvlist = nvl;
++}
++
++/*
++ * Return current nvlist.
++ */
++nvlist_t *
++pjdlog_nvlist_get(void)
++{
++
++	assert(pjdlog_initialized == PJDLOG_INITIALIZED);
++	assert(pjdlog_mode == PJDLOG_MODE_NV);
++
++	return (pjdlog_nvlist);
++}
++
+ /*
+  * Convert log level into string.
+  */
+@@ -538,15 +580,12 @@ pjdlogv_common_single_line(const char *func, const char *file, int line,
+ 	size_t logs;
+ 
+ 	assert(pjdlog_initialized == PJDLOG_INITIALIZED);
+-#ifdef notyet
+ 	assert(pjdlog_mode == PJDLOG_MODE_STD ||
+ 	    pjdlog_mode == PJDLOG_MODE_SYSLOG ||
+-	    pjdlog_mode == PJDLOG_MODE_SOCK);
+-#else
+-	assert(pjdlog_mode == PJDLOG_MODE_STD ||
+-	    pjdlog_mode == PJDLOG_MODE_SYSLOG);
+-#endif
+-	assert(pjdlog_mode != PJDLOG_MODE_SOCK || pjdlog_sock >= 0);
++	    pjdlog_mode == PJDLOG_MODE_SOCK ||
++	    pjdlog_mode == PJDLOG_MODE_NV);
++	assert((pjdlog_mode != PJDLOG_MODE_SOCK &&
++	    pjdlog_mode != PJDLOG_MODE_NV) || pjdlog_sock >= 0);
+ 	assert(loglevel == LOG_EMERG || loglevel == LOG_ALERT ||
+ 	    loglevel == LOG_CRIT || loglevel == LOG_ERR ||
+ 	    loglevel == LOG_WARNING || loglevel == LOG_NOTICE ||
+@@ -561,6 +600,7 @@ pjdlogv_common_single_line(const char *func, const char *file, int line,
+ 	switch (pjdlog_mode) {
+ 	case PJDLOG_MODE_STD:
+ 	case PJDLOG_MODE_SYSLOG:
++	case PJDLOG_MODE_NV:
+ 		logp = log;
+ 		logs = sizeof(log);
+ 		break;
+@@ -574,7 +614,7 @@ pjdlogv_common_single_line(const char *func, const char *file, int line,
+ 
+ 	*logp = '\0';
+ 
+-	if (pjdlog_mode != PJDLOG_MODE_SOCK) {
++	if (pjdlog_mode != PJDLOG_MODE_SOCK && pjdlog_mode != PJDLOG_MODE_NV) {
+ 		if (loglevel == LOG_DEBUG) {
+ 			/* Attach debuglevel if this is debug log. */
+ 			snprlcat(logp, logs, "[%s%d] ",
+@@ -596,7 +636,7 @@ pjdlogv_common_single_line(const char *func, const char *file, int line,
+ 			snprlcat(logp, logs, "(%s:%d:%s) ", file, line, func);
+ 	}
+ 
+-	if (pjdlog_mode != PJDLOG_MODE_SOCK) {
++	if (pjdlog_mode != PJDLOG_MODE_SOCK && pjdlog_mode != PJDLOG_MODE_NV) {
+ 		snprlcat(logp, logs, "%s",
+ 		    pjdlog_prefix[pjdlog_prefix_current]);
+ 	}
+@@ -609,13 +649,37 @@ pjdlogv_common_single_line(const char *func, const char *file, int line,
+ 
+ 	switch (pjdlog_mode) {
+ 	case PJDLOG_MODE_STD:
+-		fprintf(stderr, "%s\n", logp);
+-		fflush(stderr);
++	    {
++		FILE *out;
++
++		/*
++		 * We send errors and warning to stderr and the rest to stdout.
++		 */
++		switch (loglevel) {
++		case LOG_EMERG:
++		case LOG_ALERT:
++		case LOG_CRIT:
++		case LOG_ERR:
++		case LOG_WARNING:
++			out = stderr;
++			break;
++		case LOG_NOTICE:
++		case LOG_INFO:
++		case LOG_DEBUG:
++			out = stdout;
++			break;
++		default:
++			assert(!"Invalid loglevel.");
++			abort();	/* XXX: gcc */
++		}
++
++		fprintf(out, "%s\n", logp);
++		fflush(out);
+ 		break;
++	    }
+ 	case PJDLOG_MODE_SYSLOG:
+ 		syslog(loglevel, "%s", logp);
+ 		break;
+-#ifdef notyet
+ 	case PJDLOG_MODE_SOCK:
+ 	    {
+ 		char ack[2];
+@@ -631,7 +695,26 @@ pjdlogv_common_single_line(const char *func, const char *file, int line,
+ 			assert(!"Unable to send log.");
+ 		break;
+ 	    }
+-#endif
++	case PJDLOG_MODE_NV:
++	    {
++		nvlist_t *nvl;
++		int result;
++		char ack[2];
++
++		nvl = nvlist_create(0);
++		nvlist_add_number(nvl, "type", (uint64_t)pjdlog_type);
++		nvlist_add_number(nvl, "loglevel", (uint64_t)loglevel);
++		nvlist_add_number(nvl, "debuglevel", (uint64_t)debuglevel);
++		nvlist_add_string(nvl, "message", logp);
++		nvlist_add_nvlist(nvl, "nvlist", pjdlog_nvlist);
++		result = nvlist_send(pjdlog_sock, nvl);
++		nvlist_destroy(nvl);
++		if (result == -1)
++			assert(!"Unable to send log.");
++		if (robust_recv(pjdlog_sock, ack, sizeof(ack)) == -1)
++			assert(!"Unable to send log.");
++		break;
++	    }
+ 	default:
+ 		assert(!"Invalid mode.");
+ 	}
+@@ -653,7 +736,8 @@ _pjdlogv_common(const char *func, const char *file, int line, int loglevel,
+ 	assert(pjdlog_initialized == PJDLOG_INITIALIZED);
+ 	assert(pjdlog_mode == PJDLOG_MODE_STD ||
+ 	    pjdlog_mode == PJDLOG_MODE_SYSLOG ||
+-	    pjdlog_mode == PJDLOG_MODE_SOCK);
++	    pjdlog_mode == PJDLOG_MODE_SOCK ||
++	    pjdlog_mode == PJDLOG_MODE_NV);
+ 	assert(pjdlog_mode != PJDLOG_MODE_SOCK || pjdlog_sock >= 0);
+ 	assert(loglevel == LOG_EMERG || loglevel == LOG_ALERT ||
+ 	    loglevel == LOG_CRIT || loglevel == LOG_ERR ||
+@@ -669,7 +753,8 @@ _pjdlogv_common(const char *func, const char *file, int line, int loglevel,
+ 
+ 	saved_errno = errno;
+ 
+-	vsnprintf(log, sizeof(log), fmt, ap);
++	/* Just truncate the log if it is too long. */
++	(void)vsnprintf(log, sizeof(log), fmt, ap);
+ 	logp = log;
+ 	prvline = NULL;
+ 
+@@ -778,34 +863,92 @@ _pjdlog_abort(const char *func, const char *file, int line,
+ 	abort();
+ }
+ 
+-#ifdef notyet
+ /*
+  * Receive log from the given socket.
+  */
+ int
+ pjdlog_receive(int sock)
+ {
+-	char log[PJDLOG_MAX_MSGSIZE];
+ 	int loglevel, debuglevel;
+-	uint16_t dlen;
+ 
+-	if (robust_recv(sock, &dlen, sizeof(dlen)) == -1)
+-		return (-1);
++	switch (pjdlog_mode) {
++	case PJDLOG_MODE_SOCK:
++	    {
++		char log[PJDLOG_MAX_MSGSIZE];
++		uint16_t dlen;
+ 
+-	PJDLOG_ASSERT(dlen > 0);
+-	PJDLOG_ASSERT(dlen <= PJDLOG_MAX_MSGSIZE - 3);
++		if (robust_recv(sock, &dlen, sizeof(dlen)) == -1)
++			return (-1);
+ 
+-	if (robust_recv(sock, log, (size_t)dlen) == -1)
+-		return (-1);
++		PJDLOG_ASSERT(dlen > 0);
++		PJDLOG_ASSERT(dlen <= PJDLOG_MAX_MSGSIZE - 3);
++
++		if (robust_recv(sock, log, (size_t)dlen) == -1)
++			return (-1);
+ 
+-	log[dlen - 1] = '\0';
+-	loglevel = log[0];
+-	debuglevel = log[1];
+-	_pjdlog_common(NULL, NULL, 0, loglevel, debuglevel, -1, "%s", log + 2);
++		log[dlen - 1] = '\0';
++		loglevel = log[0];
++		debuglevel = log[1];
++		_pjdlog_common(NULL, NULL, 0, loglevel, debuglevel, -1, "%s",
++		    log + 2);
++		break;
++	    }
++	case PJDLOG_MODE_STD:
++	case PJDLOG_MODE_SYSLOG:
++	case PJDLOG_MODE_NV:
++	    {
++		uint64_t value;
++		void *cookie;
++		const char *message, *name;
++		nvlist_t *nvl, *nvlist, *previous_nvlist;
++		int nvtype, previous_type, type;
++
++		if ((nvl = nvlist_recv(sock, 0)) == NULL ||
++		    !nvlist_exists_number(nvl, "type") ||
++		    !nvlist_exists_number(nvl, "loglevel") ||
++		    !nvlist_exists_number(nvl, "debuglevel") ||
++		    !nvlist_exists_string(nvl, "message") ||
++		    !nvlist_exists_nvlist(nvl, "nvlist")) {
++			return (-1);
++		}
++
++		type = (int)nvlist_get_number(nvl, "type");
++		loglevel = (int)nvlist_get_number(nvl, "loglevel");
++		debuglevel = (int)nvlist_get_number(nvl, "debuglevel");
++		message = nvlist_get_string(nvl, "message");
++		nvlist = nvlist_take_nvlist(nvl, "nvlist");
++
++		if (pjdlog_nvlist != NULL) {
++			cookie = NULL;
++			while ((name = nvlist_next(pjdlog_nvlist, &nvtype,
++			    &cookie)) != NULL) {
++				if (nvtype != NV_TYPE_NUMBER)
++					continue;
++				value = nvlist_get_number(pjdlog_nvlist, name);
++				nvlist_add_number(nvlist, name, value);
++			}
++		}
++
++		previous_type = pjdlog_type;
++		previous_nvlist = pjdlog_nvlist;
++		pjdlog_type = type;
++		pjdlog_nvlist = nvlist;
++		_pjdlog_common(NULL, NULL, 0, loglevel, debuglevel, -1, "%s",
++		    message);
++		pjdlog_type = previous_type;
++		pjdlog_nvlist = previous_nvlist;
++
++		nvlist_destroy(nvlist);
++		nvlist_destroy(nvl);
++		break;
++	    }
++	default:
++		assert(!"Invalid mode.");
++		break;
++	}
+ 
+ 	if (robust_send(sock, "ok", 2) == -1)
+ 		return (-1);
+ 
+ 	return (0);
+ }
+-#endif
+diff --git a/lib/libpjdlog/pjdlog.h b/lib/libpjdlog/pjdlog.h
+old mode 100644
+new mode 100755
+index 20b1a1a04..4f48d8231
+--- a/lib/libpjdlog/pjdlog.h
++++ b/lib/libpjdlog/pjdlog.h
+@@ -1,6 +1,4 @@
+ /*-
+- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+- *
+  * Copyright (c) 2009-2010 The FreeBSD Foundation
+  * Copyright (c) 2011 Pawel Jakub Dawidek <pjd@FreeBSD.org>
+  * All rights reserved.
+@@ -29,7 +27,7 @@
+  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+  * SUCH DAMAGE.
+  *
+- * $FreeBSD: releng/12.0/lib/libpjdlog/pjdlog.h 326219 2017-11-26 02:00:33Z pfg $
++ * $FreeBSD: head/sbin/hastd/pjdlog.h 228695 2011-12-18 20:40:19Z pjd $
+  */
+ 
+ #ifndef	_PJDLOG_H_
+@@ -39,12 +37,16 @@
+ 
+ #include <errno.h>
+ #include <stdarg.h>
++#include <stdint.h>
+ #include <sysexits.h>
+ #include <syslog.h>
+ 
++#include <nv.h>
++
+ #define	PJDLOG_MODE_STD		0
+ #define	PJDLOG_MODE_SYSLOG	1
+ #define	PJDLOG_MODE_SOCK	2
++#define	PJDLOG_MODE_NV		3
+ 
+ void pjdlog_init(int mode);
+ void pjdlog_fini(void);
+@@ -52,10 +54,11 @@ void pjdlog_fini(void);
+ void pjdlog_mode_set(int mode);
+ int pjdlog_mode_get(void);
+ 
+-#ifdef notyet
+ void pjdlog_sock_set(int sock);
+ int pjdlog_sock_get(void);
+-#endif
++
++void pjdlog_type_set(int type);
++int pjdlog_type_get(void);
+ 
+ void pjdlog_debug_set(int level);
+ int pjdlog_debug_get(void);
+@@ -67,6 +70,9 @@ void pjdlog_prefix_push(const char *fmt, ...) __printflike(1, 2);
+ void pjdlogv_prefix_push(const char *fmt, va_list ap) __printflike(1, 0);
+ void pjdlog_prefix_pop(void);
+ 
++void pjdlog_nvlist_set(nvlist_t *nvl);
++nvlist_t *pjdlog_nvlist_get(void);
++
+ void _pjdlogv_common(const char *func, const char *file, int line, int loglevel,
+     int debuglevel, int error, const char *fmt, va_list ap) __printflike(7, 0);
+ void _pjdlog_common(const char *func, const char *file, int line, int loglevel,
+@@ -80,9 +86,7 @@ void _pjdlog_exit(const char *func, const char *file, int line, int exitcode,
+ void _pjdlog_abort(const char *func, const char *file, int line, int error,
+     const char *failedexpr, const char *fmt, ...) __printflike(6, 7) __dead2;
+ 
+-#ifdef notyet
+ int pjdlog_receive(int sock);
+-#endif
+ 
+ #define	pjdlogv_common(loglevel, debuglevel, error, fmt, ap)		\
+ 	_pjdlogv_common(__func__, __FILE__, __LINE__, (loglevel),	\
+@@ -153,24 +157,64 @@ int pjdlog_receive(int sock);
+ 		    #expr, __func__);					\
+ 	}								\
+ } while (0)
++#define	PJDLOG_REVERIFY(expr, ...)	do {				\
++	if (!(expr)) {							\
++		_pjdlog_abort(__func__, __FILE__, __LINE__, errno,	\
++		    #expr, __VA_ARGS__);				\
++	}								\
++} while (0)
++
++#define	_PJDLOG_VERIFY3(left, op, right, format, type)	do {		\
++	const type __left = (type)(intptr_t)(left);			\
++	const type __right = (type)(intptr_t)(right);			\
++									\
++	if (!(__left op __right)) {					\
++		_pjdlog_abort(__func__, __FILE__, __LINE__, -1,		\
++		    NULL, "Assertion failed: (%s) (" format " %s " format ").", \
++		    #left " " #op " " #right, __left, #op, __right);	\
++	}								\
++} while (0)
++
++#define	PJDLOG_VERIFY3S(left, op, right)				\
++	_PJDLOG_VERIFY3(left, op, right, "%jd", intmax_t)
++#define	PJDLOG_VERIFY3U(left, op, right)				\
++	_PJDLOG_VERIFY3(left, op, right, "%ju", uintmax_t)
++#define	PJDLOG_VERIFY3P(left, op, right)				\
++	_PJDLOG_VERIFY3(left, op, right, "%p", void *)
++
++#define	PJDLOG_VERIFY3STR(left, op, right)	do {			\
++	const char *__left = (left);					\
++	const char *__right = (right);					\
++									\
++	if (!(strcmp(__left, __right) op 0)) {				\
++		_pjdlog_abort(__func__, __FILE__, __LINE__, -1,		\
++		    NULL, "Assertion failed: (%s) (\"%s\" %s \"%s\").", \
++		    #left " " #op " " #right, __left, #op, __right);	\
++	}								\
++} while (0)
++
+ #define	PJDLOG_ABORT(...)	_pjdlog_abort(__func__, __FILE__,	\
+ 				    __LINE__, -1, NULL, __VA_ARGS__)
++#define	PJDLOG_EABORT(...)	_pjdlog_abort(__func__, __FILE__,	\
++				    __LINE__, errno, NULL, __VA_ARGS__)
+ #ifdef NDEBUG
+ #define	PJDLOG_ASSERT(expr)	do { } while (0)
+ #define	PJDLOG_RASSERT(...)	do { } while (0)
++#define	PJDLOG_EASSERT(...)	do { } while (0)
++#define	PJDLOG_REASSERT(...)	do { } while (0)
++#define	PJDLOG_ASSERT3S(...)	do { } while (0)
++#define	PJDLOG_ASSERT3U(...)	do { } while (0)
++#define	PJDLOG_ASSERT3P(...)	do { } while (0)
++#define	PJDLOG_ASSERT3STR(...)	do { } while (0)
+ #else
+-#define	PJDLOG_ASSERT(expr)	do {					\
+-	if (!(expr)) {							\
+-		_pjdlog_abort(__func__, __FILE__, __LINE__, -1, #expr,	\
+-		    __func__);						\
+-	}								\
+-} while (0)
+-#define	PJDLOG_RASSERT(expr, ...)	do {				\
+-	if (!(expr)) {							\
+-		_pjdlog_abort(__func__, __FILE__, __LINE__, -1, #expr,	\
+-		    __VA_ARGS__);					\
+-	}								\
+-} while (0)
++#define	PJDLOG_ASSERT(expr)		PJDLOG_VERIFY(expr)
++#define	PJDLOG_RASSERT(expr, ...)	PJDLOG_RVERIFY((expr), __VA_ARGS__)
++#define	PJDLOG_EASSERT(expr)		PJDLOG_EVERIFY(expr)
++#define	PJDLOG_REASSERT(expr, ...)	PJDLOG_REVERIFY((expr), __VA_ARGS__)
++#define	PJDLOG_ASSERT3S(left, op, right)	PJDLOG_VERIFY3S(left, op, right)
++#define	PJDLOG_ASSERT3U(left, op, right)	PJDLOG_VERIFY3U(left, op, right)
++#define	PJDLOG_ASSERT3P(left, op, right)	PJDLOG_VERIFY3P(left, op, right)
++#define	PJDLOG_ASSERT3STR(left, op, right)	PJDLOG_VERIFY3STR(left, op, right)
+ #endif
+ 
+ #endif	/* !_PJDLOG_H_ */
+-- 
+2.20.1
+

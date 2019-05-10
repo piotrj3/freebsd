@@ -1,0 +1,1863 @@
+From 55da5ad8186fd40f36a6bb3a56d568f9cd62c24d Mon Sep 17 00:00:00 2001
+From: Piotr Jamski <piotrj3@gmail.com>
+Date: Fri, 26 Apr 2019 08:52:43 +0200
+Subject: [PATCH 1/9] removing file in hastd
+
+---
+ sbin/hastd/activemap.c |   2 +-
+ sbin/hastd/pjdlog.c    | 616 -----------------------------------------
+ sbin/hastd/pjdlog.h    | 119 --------
+ 3 files changed, 1 insertion(+), 736 deletions(-)
+ delete mode 100644 sbin/hastd/pjdlog.c
+ delete mode 100644 sbin/hastd/pjdlog.h
+
+diff --git a/sbin/hastd/activemap.c b/sbin/hastd/activemap.c
+index 56d25cd79..04bbc2fce 100644
+--- a/sbin/hastd/activemap.c
++++ b/sbin/hastd/activemap.c
+@@ -42,7 +42,7 @@ __FBSDID("$FreeBSD: releng/12.0/sbin/hastd/activemap.c 326276 2017-11-27 15:37:1
+ #include <stdlib.h>
+ #include <string.h>
+ 
+-#include <pjdlog.h>
++#include <lib/pjdlog.h>
+ 
+ #include "activemap.h"
+ 
+diff --git a/sbin/hastd/pjdlog.c b/sbin/hastd/pjdlog.c
+deleted file mode 100644
+index 0476aa3ff..000000000
+--- a/sbin/hastd/pjdlog.c
++++ /dev/null
+@@ -1,616 +0,0 @@
+-/*-
+- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+- *
+- * Copyright (c) 2009-2010 The FreeBSD Foundation
+- * Copyright (c) 2011 Pawel Jakub Dawidek <pjd@FreeBSD.org>
+- * All rights reserved.
+- *
+- * This software was developed by Pawel Jakub Dawidek under sponsorship from
+- * the FreeBSD Foundation.
+- *
+- * Redistribution and use in source and binary forms, with or without
+- * modification, are permitted provided that the following conditions
+- * are met:
+- * 1. Redistributions of source code must retain the above copyright
+- *    notice, this list of conditions and the following disclaimer.
+- * 2. Redistributions in binary form must reproduce the above copyright
+- *    notice, this list of conditions and the following disclaimer in the
+- *    documentation and/or other materials provided with the distribution.
+- *
+- * THIS SOFTWARE IS PROVIDED BY THE AUTHORS AND CONTRIBUTORS ``AS IS'' AND
+- * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+- * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHORS OR CONTRIBUTORS BE LIABLE
+- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+- * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+- * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+- * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+- * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+- * SUCH DAMAGE.
+- */
+-
+-#include <sys/cdefs.h>
+-__FBSDID("$FreeBSD: releng/12.0/sbin/hastd/pjdlog.c 335893 2018-07-03 15:48:34Z br $");
+-
+-#include <sys/types.h>
+-#include <sys/socket.h>
+-#include <netinet/in.h>
+-#include <arpa/inet.h>
+-
+-#include <assert.h>
+-#include <errno.h>
+-#include <libutil.h>
+-#include <printf.h>
+-#include <stdarg.h>
+-#include <stdint.h>
+-#include <stdio.h>
+-#include <stdlib.h>
+-#include <string.h>
+-#include <syslog.h>
+-
+-#include "pjdlog.h"
+-
+-#define	PJDLOG_NEVER_INITIALIZED	0
+-#define	PJDLOG_NOT_INITIALIZED		1
+-#define	PJDLOG_INITIALIZED		2
+-
+-static int pjdlog_initialized = PJDLOG_NEVER_INITIALIZED;
+-static int pjdlog_mode, pjdlog_debug_level;
+-static char pjdlog_prefix[128];
+-
+-static int
+-pjdlog_printf_arginfo_humanized_number(const struct printf_info *pi __unused,
+-    size_t n, int *argt)
+-{
+-
+-	assert(n >= 1);
+-	argt[0] = PA_INT | PA_FLAG_INTMAX;
+-	return (1);
+-}
+-
+-static int
+-pjdlog_printf_render_humanized_number(struct __printf_io *io,
+-    const struct printf_info *pi, const void * const *arg)
+-{
+-	char buf[5];
+-	intmax_t num;
+-	int ret;
+-
+-	num = *(const intmax_t *)arg[0];
+-	humanize_number(buf, sizeof(buf), (int64_t)num, "", HN_AUTOSCALE,
+-	    HN_NOSPACE | HN_DECIMAL);
+-	ret = __printf_out(io, pi, buf, strlen(buf));
+-	__printf_flush(io);
+-	return (ret);
+-}
+-
+-static int
+-pjdlog_printf_arginfo_sockaddr(const struct printf_info *pi __unused,
+-    size_t n, int *argt)
+-{
+-
+-	assert(n >= 1);
+-	argt[0] = PA_POINTER;
+-	return (1);
+-}
+-
+-static int
+-pjdlog_printf_render_sockaddr(struct __printf_io *io,
+-    const struct printf_info *pi, const void * const *arg)
+-{
+-	const struct sockaddr_storage *ss;
+-	char buf[64];
+-	int ret;
+-
+-	ss = *(const struct sockaddr_storage * const *)arg[0];
+-	switch (ss->ss_family) {
+-	case AF_INET:
+-	    {
+-		char addr[INET_ADDRSTRLEN];
+-		const struct sockaddr_in *sin;
+-		unsigned int port;
+-
+-		sin = (const struct sockaddr_in *)ss;
+-		port = ntohs(sin->sin_port);
+-		if (inet_ntop(ss->ss_family, &sin->sin_addr, addr,
+-		    sizeof(addr)) == NULL) {
+-			PJDLOG_ABORT("inet_ntop(AF_INET) failed: %s.",
+-			    strerror(errno));
+-		}
+-		snprintf(buf, sizeof(buf), "%s:%u", addr, port);
+-		break;
+-	    }
+-	case AF_INET6:
+-	    {
+-		char addr[INET6_ADDRSTRLEN];
+-		const struct sockaddr_in6 *sin;
+-		unsigned int port;
+-
+-		sin = (const struct sockaddr_in6 *)ss;
+-		port = ntohs(sin->sin6_port);
+-		if (inet_ntop(ss->ss_family, &sin->sin6_addr, addr,
+-		    sizeof(addr)) == NULL) {
+-			PJDLOG_ABORT("inet_ntop(AF_INET6) failed: %s.",
+-			    strerror(errno));
+-		}
+-		snprintf(buf, sizeof(buf), "[%s]:%u", addr, port);
+-		break;
+-	    }
+-	default:
+-		snprintf(buf, sizeof(buf), "[unsupported family %hhu]",
+-		    ss->ss_family);
+-		break;
+-	}
+-	ret = __printf_out(io, pi, buf, strlen(buf));
+-	__printf_flush(io);
+-	return (ret);
+-}
+-
+-void
+-pjdlog_init(int mode)
+-{
+-	int saved_errno;
+-
+-	assert(pjdlog_initialized == PJDLOG_NEVER_INITIALIZED ||
+-	    pjdlog_initialized == PJDLOG_NOT_INITIALIZED);
+-	assert(mode == PJDLOG_MODE_STD || mode == PJDLOG_MODE_SYSLOG);
+-
+-	saved_errno = errno;
+-
+-	if (pjdlog_initialized == PJDLOG_NEVER_INITIALIZED) {
+-		__use_xprintf = 1;
+-		register_printf_render_std("T");
+-		register_printf_render('N',
+-		    pjdlog_printf_render_humanized_number,
+-		    pjdlog_printf_arginfo_humanized_number);
+-		register_printf_render('S',
+-		    pjdlog_printf_render_sockaddr,
+-		    pjdlog_printf_arginfo_sockaddr);
+-	}
+-
+-	if (mode == PJDLOG_MODE_SYSLOG)
+-		openlog(NULL, LOG_PID | LOG_NDELAY, LOG_DAEMON);
+-	pjdlog_mode = mode;
+-	pjdlog_debug_level = 0;
+-	bzero(pjdlog_prefix, sizeof(pjdlog_prefix));
+-
+-	pjdlog_initialized = PJDLOG_INITIALIZED;
+-
+-	errno = saved_errno;
+-}
+-
+-void
+-pjdlog_fini(void)
+-{
+-	int saved_errno;
+-
+-	assert(pjdlog_initialized == PJDLOG_INITIALIZED);
+-
+-	saved_errno = errno;
+-
+-	if (pjdlog_mode == PJDLOG_MODE_SYSLOG)
+-		closelog();
+-
+-	pjdlog_initialized = PJDLOG_NOT_INITIALIZED;
+-
+-	errno = saved_errno;
+-}
+-
+-/*
+- * Configure where the logs should go.
+- * By default they are send to stdout/stderr, but after going into background
+- * (eg. by calling daemon(3)) application is responsible for changing mode to
+- * PJDLOG_MODE_SYSLOG, so logs will be send to syslog.
+- */
+-void
+-pjdlog_mode_set(int mode)
+-{
+-	int saved_errno;
+-
+-	assert(pjdlog_initialized == PJDLOG_INITIALIZED);
+-	assert(mode == PJDLOG_MODE_STD || mode == PJDLOG_MODE_SYSLOG);
+-
+-	if (pjdlog_mode == mode)
+-		return;
+-
+-	saved_errno = errno;
+-
+-	if (mode == PJDLOG_MODE_SYSLOG)
+-		openlog(NULL, LOG_PID | LOG_NDELAY, LOG_DAEMON);
+-	else /* if (mode == PJDLOG_MODE_STD) */
+-		closelog();
+-
+-	pjdlog_mode = mode;
+-
+-	errno = saved_errno;
+-}
+-
+-/*
+- * Return current mode.
+- */
+-int
+-pjdlog_mode_get(void)
+-{
+-
+-	assert(pjdlog_initialized == PJDLOG_INITIALIZED);
+-
+-	return (pjdlog_mode);
+-}
+-
+-/*
+- * Set debug level. All the logs above the level specified here will be
+- * ignored.
+- */
+-void
+-pjdlog_debug_set(int level)
+-{
+-
+-	assert(pjdlog_initialized == PJDLOG_INITIALIZED);
+-	assert(level >= 0);
+-
+-	pjdlog_debug_level = level;
+-}
+-
+-/*
+- * Return current debug level.
+- */
+-int
+-pjdlog_debug_get(void)
+-{
+-
+-	assert(pjdlog_initialized == PJDLOG_INITIALIZED);
+-
+-	return (pjdlog_debug_level);
+-}
+-
+-/*
+- * Set prefix that will be used before each log.
+- * Setting prefix to NULL will remove it.
+- */
+-void
+-pjdlog_prefix_set(const char *fmt, ...)
+-{
+-	va_list ap;
+-
+-	assert(pjdlog_initialized == PJDLOG_INITIALIZED);
+-
+-	va_start(ap, fmt);
+-	pjdlogv_prefix_set(fmt, ap);
+-	va_end(ap);
+-}
+-
+-/*
+- * Set prefix that will be used before each log.
+- * Setting prefix to NULL will remove it.
+- */
+-void
+-pjdlogv_prefix_set(const char *fmt, va_list ap)
+-{
+-	int saved_errno;
+-
+-	assert(pjdlog_initialized == PJDLOG_INITIALIZED);
+-	assert(fmt != NULL);
+-
+-	saved_errno = errno;
+-
+-	vsnprintf(pjdlog_prefix, sizeof(pjdlog_prefix), fmt, ap);
+-
+-	errno = saved_errno;
+-}
+-
+-/*
+- * Convert log level into string.
+- */
+-static const char *
+-pjdlog_level_string(int loglevel)
+-{
+-
+-	switch (loglevel) {
+-	case LOG_EMERG:
+-		return ("EMERG");
+-	case LOG_ALERT:
+-		return ("ALERT");
+-	case LOG_CRIT:
+-		return ("CRIT");
+-	case LOG_ERR:
+-		return ("ERROR");
+-	case LOG_WARNING:
+-		return ("WARNING");
+-	case LOG_NOTICE:
+-		return ("NOTICE");
+-	case LOG_INFO:
+-		return ("INFO");
+-	case LOG_DEBUG:
+-		return ("DEBUG");
+-	}
+-	assert(!"Invalid log level.");
+-	abort();	/* XXX: gcc */
+-}
+-
+-/*
+- * Common log routine.
+- */
+-void
+-pjdlog_common(int loglevel, int debuglevel, int error, const char *fmt, ...)
+-{
+-	va_list ap;
+-
+-	assert(pjdlog_initialized == PJDLOG_INITIALIZED);
+-
+-	va_start(ap, fmt);
+-	pjdlogv_common(loglevel, debuglevel, error, fmt, ap);
+-	va_end(ap);
+-}
+-
+-/*
+- * Common log routine, which can handle regular log level as well as debug
+- * level. We decide here where to send the logs (stdout/stderr or syslog).
+- */
+-void
+-pjdlogv_common(int loglevel, int debuglevel, int error, const char *fmt,
+-    va_list ap)
+-{
+-	int saved_errno;
+-
+-	assert(pjdlog_initialized == PJDLOG_INITIALIZED);
+-	assert(loglevel == LOG_EMERG || loglevel == LOG_ALERT ||
+-	    loglevel == LOG_CRIT || loglevel == LOG_ERR ||
+-	    loglevel == LOG_WARNING || loglevel == LOG_NOTICE ||
+-	    loglevel == LOG_INFO || loglevel == LOG_DEBUG);
+-	assert(loglevel != LOG_DEBUG || debuglevel > 0);
+-	assert(error >= -1);
+-
+-	/* Ignore debug above configured level. */
+-	if (loglevel == LOG_DEBUG && debuglevel > pjdlog_debug_level)
+-		return;
+-
+-	saved_errno = errno;
+-
+-	switch (pjdlog_mode) {
+-	case PJDLOG_MODE_STD:
+-	    {
+-		FILE *out;
+-
+-		/*
+-		 * We send errors and warning to stderr and the rest to stdout.
+-		 */
+-		switch (loglevel) {
+-		case LOG_EMERG:
+-		case LOG_ALERT:
+-		case LOG_CRIT:
+-		case LOG_ERR:
+-		case LOG_WARNING:
+-			out = stderr;
+-			break;
+-		case LOG_NOTICE:
+-		case LOG_INFO:
+-		case LOG_DEBUG:
+-			out = stdout;
+-			break;
+-		default:
+-			assert(!"Invalid loglevel.");
+-			abort();	/* XXX: gcc */
+-		}
+-
+-		fprintf(out, "[%s]", pjdlog_level_string(loglevel));
+-		/* Attach debuglevel if this is debug log. */
+-		if (loglevel == LOG_DEBUG)
+-			fprintf(out, "[%d]", debuglevel);
+-		fprintf(out, " %s", pjdlog_prefix);
+-		vfprintf(out, fmt, ap);
+-		if (error != -1)
+-			fprintf(out, ": %s.", strerror(error));
+-		fprintf(out, "\n");
+-		fflush(out);
+-		break;
+-	    }
+-	case PJDLOG_MODE_SYSLOG:
+-	    {
+-		char log[1024];
+-		int len;
+-
+-		len = snprintf(log, sizeof(log), "%s", pjdlog_prefix);
+-		if ((size_t)len < sizeof(log))
+-			len += vsnprintf(log + len, sizeof(log) - len, fmt, ap);
+-		if (error != -1 && (size_t)len < sizeof(log)) {
+-			(void)snprintf(log + len, sizeof(log) - len, ": %s.",
+-			    strerror(error));
+-		}
+-		syslog(loglevel, "%s", log);
+-		break;
+-	    }
+-	default:
+-		assert(!"Invalid mode.");
+-	}
+-
+-	errno = saved_errno;
+-}
+-
+-/*
+- * Regular logs.
+- */
+-void
+-pjdlogv(int loglevel, const char *fmt, va_list ap)
+-{
+-
+-	assert(pjdlog_initialized == PJDLOG_INITIALIZED);
+-
+-	/* LOG_DEBUG is invalid here, pjdlogv?_debug() should be used. */
+-	assert(loglevel == LOG_EMERG || loglevel == LOG_ALERT ||
+-	    loglevel == LOG_CRIT || loglevel == LOG_ERR ||
+-	    loglevel == LOG_WARNING || loglevel == LOG_NOTICE ||
+-	    loglevel == LOG_INFO);
+-
+-	pjdlogv_common(loglevel, 0, -1, fmt, ap);
+-}
+-
+-/*
+- * Regular logs.
+- */
+-void
+-pjdlog(int loglevel, const char *fmt, ...)
+-{
+-	va_list ap;
+-
+-	assert(pjdlog_initialized == PJDLOG_INITIALIZED);
+-
+-	va_start(ap, fmt);
+-	pjdlogv(loglevel, fmt, ap);
+-	va_end(ap);
+-}
+-
+-/*
+- * Debug logs.
+- */
+-void
+-pjdlogv_debug(int debuglevel, const char *fmt, va_list ap)
+-{
+-
+-	assert(pjdlog_initialized == PJDLOG_INITIALIZED);
+-
+-	pjdlogv_common(LOG_DEBUG, debuglevel, -1, fmt, ap);
+-}
+-
+-/*
+- * Debug logs.
+- */
+-void
+-pjdlog_debug(int debuglevel, const char *fmt, ...)
+-{
+-	va_list ap;
+-
+-	assert(pjdlog_initialized == PJDLOG_INITIALIZED);
+-
+-	va_start(ap, fmt);
+-	pjdlogv_debug(debuglevel, fmt, ap);
+-	va_end(ap);
+-}
+-
+-/*
+- * Error logs with errno logging.
+- */
+-void
+-pjdlogv_errno(int loglevel, const char *fmt, va_list ap)
+-{
+-
+-	assert(pjdlog_initialized == PJDLOG_INITIALIZED);
+-
+-	pjdlogv_common(loglevel, 0, errno, fmt, ap);
+-}
+-
+-/*
+- * Error logs with errno logging.
+- */
+-void
+-pjdlog_errno(int loglevel, const char *fmt, ...)
+-{
+-	va_list ap;
+-
+-	assert(pjdlog_initialized == PJDLOG_INITIALIZED);
+-
+-	va_start(ap, fmt);
+-	pjdlogv_errno(loglevel, fmt, ap);
+-	va_end(ap);
+-}
+-
+-/*
+- * Log error, errno and exit.
+- */
+-void
+-pjdlogv_exit(int exitcode, const char *fmt, va_list ap)
+-{
+-
+-	assert(pjdlog_initialized == PJDLOG_INITIALIZED);
+-
+-	pjdlogv_errno(LOG_ERR, fmt, ap);
+-	exit(exitcode);
+-	/* NOTREACHED */
+-}
+-
+-/*
+- * Log error, errno and exit.
+- */
+-void
+-pjdlog_exit(int exitcode, const char *fmt, ...)
+-{
+-	va_list ap;
+-
+-	assert(pjdlog_initialized == PJDLOG_INITIALIZED);
+-
+-	va_start(ap, fmt);
+-	pjdlogv_exit(exitcode, fmt, ap);
+-	/* NOTREACHED */
+-	va_end(ap);
+-}
+-
+-/*
+- * Log error and exit.
+- */
+-void
+-pjdlogv_exitx(int exitcode, const char *fmt, va_list ap)
+-{
+-
+-	assert(pjdlog_initialized == PJDLOG_INITIALIZED);
+-
+-	pjdlogv(LOG_ERR, fmt, ap);
+-	exit(exitcode);
+-	/* NOTREACHED */
+-}
+-
+-/*
+- * Log error and exit.
+- */
+-void
+-pjdlog_exitx(int exitcode, const char *fmt, ...)
+-{
+-	va_list ap;
+-
+-	assert(pjdlog_initialized == PJDLOG_INITIALIZED);
+-
+-	va_start(ap, fmt);
+-	pjdlogv_exitx(exitcode, fmt, ap);
+-	/* NOTREACHED */
+-	va_end(ap);
+-}
+-
+-/*
+- * Log failure message and exit.
+- */
+-void
+-pjdlog_abort(const char *func, const char *file, int line,
+-    const char *failedexpr, const char *fmt, ...)
+-{
+-	va_list ap;
+-
+-	assert(pjdlog_initialized == PJDLOG_INITIALIZED);
+-
+-	/*
+-	 * When there is no message we pass __func__ as 'fmt'.
+-	 * It would be cleaner to pass NULL or "", but gcc generates a warning
+-	 * for both of those.
+-	 */
+-	if (fmt != func) {
+-		va_start(ap, fmt);
+-		pjdlogv_critical(fmt, ap);
+-		va_end(ap);
+-	}
+-	if (failedexpr == NULL) {
+-		if (func == NULL) {
+-			pjdlog_critical("Aborted at file %s, line %d.", file,
+-			    line);
+-		} else {
+-			pjdlog_critical("Aborted at function %s, file %s, line %d.",
+-			    func, file, line);
+-		}
+-	} else {
+-		if (func == NULL) {
+-			pjdlog_critical("Assertion failed: (%s), file %s, line %d.",
+-			    failedexpr, file, line);
+-		} else {
+-			pjdlog_critical("Assertion failed: (%s), function %s, file %s, line %d.",
+-			    failedexpr, func, file, line);
+-		}
+-	}
+-	abort();
+-}
+diff --git a/sbin/hastd/pjdlog.h b/sbin/hastd/pjdlog.h
+deleted file mode 100644
+index c584d2f17..000000000
+--- a/sbin/hastd/pjdlog.h
++++ /dev/null
+@@ -1,119 +0,0 @@
+-/*-
+- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+- *
+- * Copyright (c) 2009-2010 The FreeBSD Foundation
+- * Copyright (c) 2011 Pawel Jakub Dawidek <pjd@FreeBSD.org>
+- * All rights reserved.
+- *
+- * This software was developed by Pawel Jakub Dawidek under sponsorship from
+- * the FreeBSD Foundation.
+- *
+- * Redistribution and use in source and binary forms, with or without
+- * modification, are permitted provided that the following conditions
+- * are met:
+- * 1. Redistributions of source code must retain the above copyright
+- *    notice, this list of conditions and the following disclaimer.
+- * 2. Redistributions in binary form must reproduce the above copyright
+- *    notice, this list of conditions and the following disclaimer in the
+- *    documentation and/or other materials provided with the distribution.
+- *
+- * THIS SOFTWARE IS PROVIDED BY THE AUTHORS AND CONTRIBUTORS ``AS IS'' AND
+- * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+- * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHORS OR CONTRIBUTORS BE LIABLE
+- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+- * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+- * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+- * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+- * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+- * SUCH DAMAGE.
+- *
+- * $FreeBSD: releng/12.0/sbin/hastd/pjdlog.h 326276 2017-11-27 15:37:16Z pfg $
+- */
+-
+-#ifndef	_PJDLOG_H_
+-#define	_PJDLOG_H_
+-
+-#include <sys/cdefs.h>
+-
+-#include <stdarg.h>
+-#include <sysexits.h>
+-#include <syslog.h>
+-
+-#define	PJDLOG_MODE_STD		0
+-#define	PJDLOG_MODE_SYSLOG	1
+-
+-void pjdlog_init(int mode);
+-void pjdlog_fini(void);
+-
+-void pjdlog_mode_set(int mode);
+-int pjdlog_mode_get(void);
+-
+-void pjdlog_debug_set(int level);
+-int pjdlog_debug_get(void);
+-
+-void pjdlog_prefix_set(const char *fmt, ...) __printflike(1, 2);
+-void pjdlogv_prefix_set(const char *fmt, va_list ap) __printflike(1, 0);
+-
+-void pjdlog_common(int loglevel, int debuglevel, int error, const char *fmt,
+-    ...) __printflike(4, 5);
+-void pjdlogv_common(int loglevel, int debuglevel, int error, const char *fmt,
+-    va_list ap) __printflike(4, 0);
+-
+-void pjdlog(int loglevel, const char *fmt, ...) __printflike(2, 3);
+-void pjdlogv(int loglevel, const char *fmt, va_list ap) __printflike(2, 0);
+-
+-#define	pjdlogv_emergency(fmt, ap)	pjdlogv(LOG_EMERG, (fmt), (ap))
+-#define	pjdlog_emergency(...)		pjdlog(LOG_EMERG, __VA_ARGS__)
+-#define	pjdlogv_alert(fmt, ap)		pjdlogv(LOG_ALERT, (fmt), (ap))
+-#define	pjdlog_alert(...)		pjdlog(LOG_ALERT, __VA_ARGS__)
+-#define	pjdlogv_critical(fmt, ap)	pjdlogv(LOG_CRIT, (fmt), (ap))
+-#define	pjdlog_critical(...)		pjdlog(LOG_CRIT, __VA_ARGS__)
+-#define	pjdlogv_error(fmt, ap)		pjdlogv(LOG_ERR, (fmt), (ap))
+-#define	pjdlog_error(...)		pjdlog(LOG_ERR, __VA_ARGS__)
+-#define	pjdlogv_warning(fmt, ap)	pjdlogv(LOG_WARNING, (fmt), (ap))
+-#define	pjdlog_warning(...)		pjdlog(LOG_WARNING, __VA_ARGS__)
+-#define	pjdlogv_notice(fmt, ap)		pjdlogv(LOG_NOTICE, (fmt), (ap))
+-#define	pjdlog_notice(...)		pjdlog(LOG_NOTICE, __VA_ARGS__)
+-#define	pjdlogv_info(fmt, ap)		pjdlogv(LOG_INFO, (fmt), (ap))
+-#define	pjdlog_info(...)		pjdlog(LOG_INFO, __VA_ARGS__)
+-
+-void pjdlog_debug(int debuglevel, const char *fmt, ...) __printflike(2, 3);
+-void pjdlogv_debug(int debuglevel, const char *fmt, va_list ap) __printflike(2, 0);
+-
+-void pjdlog_errno(int loglevel, const char *fmt, ...) __printflike(2, 3);
+-void pjdlogv_errno(int loglevel, const char *fmt, va_list ap) __printflike(2, 0);
+-
+-void pjdlog_exit(int exitcode, const char *fmt, ...) __printflike(2, 3) __dead2;
+-void pjdlogv_exit(int exitcode, const char *fmt, va_list ap) __printflike(2, 0) __dead2;
+-
+-void pjdlog_exitx(int exitcode, const char *fmt, ...) __printflike(2, 3) __dead2;
+-void pjdlogv_exitx(int exitcode, const char *fmt, va_list ap) __printflike(2, 0) __dead2;
+-
+-void pjdlog_abort(const char *func, const char *file, int line,
+-    const char *failedexpr, const char *fmt, ...) __printflike(5, 6) __dead2;
+-
+-#define	PJDLOG_VERIFY(expr)	do {					\
+-	if (!(expr)) {							\
+-		pjdlog_abort(__func__, __FILE__, __LINE__, #expr,	\
+-		    __func__);						\
+-	}								\
+-} while (0)
+-#define	PJDLOG_RVERIFY(expr, ...)	do {				\
+-	if (!(expr)) {							\
+-		pjdlog_abort(__func__, __FILE__, __LINE__, #expr,	\
+-		    __VA_ARGS__);					\
+-	}								\
+-} while (0)
+-#define	PJDLOG_ABORT(...)	pjdlog_abort(__func__, __FILE__,	\
+-				    __LINE__, NULL, __VA_ARGS__)
+-#ifdef NDEBUG
+-#define	PJDLOG_ASSERT(expr)	do { } while (0)
+-#define	PJDLOG_RASSERT(...)	do { } while (0)
+-#else
+-#define	PJDLOG_ASSERT(expr)	PJDLOG_VERIFY(expr)
+-#define	PJDLOG_RASSERT(...)	PJDLOG_RVERIFY(__VA_ARGS__)
+-#endif
+-
+-#endif	/* !_PJDLOG_H_ */
+-- 
+2.20.1
+
+
+From 4cf4381c18a6b25cf2cdea16006b05fe8434d5ab Mon Sep 17 00:00:00 2001
+From: Piotr Jamski <piotrj3@gmail.com>
+Date: Fri, 26 Apr 2019 09:03:54 +0200
+Subject: [PATCH 2/9] changing make
+
+---
+ sbin/hastd/Makefile | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/sbin/hastd/Makefile b/sbin/hastd/Makefile
+index dcec23b76..355c986fe 100644
+--- a/sbin/hastd/Makefile
++++ b/sbin/hastd/Makefile
+@@ -12,7 +12,7 @@ SRCS+=	lzf.c
+ SRCS+=	metadata.c
+ SRCS+=	nv.c
+ SRCS+=	secondary.c
+-SRCS+=	parse.y pjdlog.c primary.c
++SRCS+=	parse.y primary.c
+ SRCS+=	proto.c proto_common.c proto_socketpair.c proto_tcp.c proto_uds.c
+ SRCS+=	rangelock.c
+ SRCS+=	subr.c
+-- 
+2.20.1
+
+
+From 8c11ebf1ace5472580bc5176614e9c0fbac9a52d Mon Sep 17 00:00:00 2001
+From: Piotr Jamski <piotrj3@gmail.com>
+Date: Fri, 26 Apr 2019 09:14:28 +0200
+Subject: [PATCH 3/9] 1
+
+---
+ sbin/hastd/activemap.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/sbin/hastd/activemap.c b/sbin/hastd/activemap.c
+index 04bbc2fce..b9bad358b 100644
+--- a/sbin/hastd/activemap.c
++++ b/sbin/hastd/activemap.c
+@@ -42,7 +42,7 @@ __FBSDID("$FreeBSD: releng/12.0/sbin/hastd/activemap.c 326276 2017-11-27 15:37:1
+ #include <stdlib.h>
+ #include <string.h>
+ 
+-#include <lib/pjdlog.h>
++#include "lib/libpjdlog/pjdlog.h"
+ 
+ #include "activemap.h"
+ 
+-- 
+2.20.1
+
+
+From 36f08003362a67268d796778d4a31f6e71b23f8f Mon Sep 17 00:00:00 2001
+From: Piotr Jamski <piotrj3@gmail.com>
+Date: Fri, 26 Apr 2019 09:18:17 +0200
+Subject: [PATCH 4/9] 2
+
+---
+ sbin/hastd/activemap.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/sbin/hastd/activemap.c b/sbin/hastd/activemap.c
+index b9bad358b..c81988048 100644
+--- a/sbin/hastd/activemap.c
++++ b/sbin/hastd/activemap.c
+@@ -42,7 +42,7 @@ __FBSDID("$FreeBSD: releng/12.0/sbin/hastd/activemap.c 326276 2017-11-27 15:37:1
+ #include <stdlib.h>
+ #include <string.h>
+ 
+-#include "lib/libpjdlog/pjdlog.h"
++#include "/../../lib/libpjdlog/pjdlog.h"
+ 
+ #include "activemap.h"
+ 
+-- 
+2.20.1
+
+
+From 9d6af398b03724c8b669b90d49b938d717571b1b Mon Sep 17 00:00:00 2001
+From: Piotr Jamski <piotrj3@gmail.com>
+Date: Fri, 26 Apr 2019 09:38:15 +0200
+Subject: [PATCH 5/9] 3
+
+---
+ sbin/hastd/Makefile.depend | 1 +
+ sbin/hastd/activemap.c     | 2 +-
+ 2 files changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/sbin/hastd/Makefile.depend b/sbin/hastd/Makefile.depend
+index 01fc383b3..d0f2494d8 100644
+--- a/sbin/hastd/Makefile.depend
++++ b/sbin/hastd/Makefile.depend
+@@ -15,6 +15,7 @@ DIRDEPS = \
+ 	lib/libsbuf \
+ 	lib/libthr \
+ 	lib/libutil \
++	lib/libpjdlog	\
+ 	usr.bin/yacc.host \
+ 
+ 
+diff --git a/sbin/hastd/activemap.c b/sbin/hastd/activemap.c
+index c81988048..8f517e009 100644
+--- a/sbin/hastd/activemap.c
++++ b/sbin/hastd/activemap.c
+@@ -42,7 +42,7 @@ __FBSDID("$FreeBSD: releng/12.0/sbin/hastd/activemap.c 326276 2017-11-27 15:37:1
+ #include <stdlib.h>
+ #include <string.h>
+ 
+-#include "/../../lib/libpjdlog/pjdlog.h"
++#include "pjdlog.h"
+ 
+ #include "activemap.h"
+ 
+-- 
+2.20.1
+
+
+From 03318ae592b41893bd0879e70aac9a7d430cac2b Mon Sep 17 00:00:00 2001
+From: Piotr Jamski <piotrj3@gmail.com>
+Date: Fri, 26 Apr 2019 10:06:28 +0200
+Subject: [PATCH 6/9] 1
+
+---
+ sbin/hastd/Makefile        | 1 +
+ sbin/hastd/Makefile.depend | 1 -
+ 2 files changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/sbin/hastd/Makefile b/sbin/hastd/Makefile
+index 355c986fe..29210cbb1 100644
+--- a/sbin/hastd/Makefile
++++ b/sbin/hastd/Makefile
+@@ -27,6 +27,7 @@ CFLAGS+=-I${.CURDIR}
+ CFLAGS+=-DHAVE_CAPSICUM
+ CFLAGS+=-DPROTO_TCP_DEFAULT_PORT=8457
+ CFLAGS+=-DINET
++CFLAGS+=-L/lib/libpjdlog
+ .if ${MK_INET6_SUPPORT} != "no"
+ CFLAGS+=-DINET6
+ .endif
+diff --git a/sbin/hastd/Makefile.depend b/sbin/hastd/Makefile.depend
+index d0f2494d8..01fc383b3 100644
+--- a/sbin/hastd/Makefile.depend
++++ b/sbin/hastd/Makefile.depend
+@@ -15,7 +15,6 @@ DIRDEPS = \
+ 	lib/libsbuf \
+ 	lib/libthr \
+ 	lib/libutil \
+-	lib/libpjdlog	\
+ 	usr.bin/yacc.host \
+ 
+ 
+-- 
+2.20.1
+
+
+From 7b7e2c6a272aedf41b3789c786730f574f7f3acd Mon Sep 17 00:00:00 2001
+From: Piotr Jamski <piotrj3@gmail.com>
+Date: Fri, 26 Apr 2019 12:55:18 +0200
+Subject: [PATCH 7/9] iI2424
+
+---
+ sbin/hastctl/Makefile | 4 ++--
+ sbin/hastd/Makefile   | 3 +--
+ 2 files changed, 3 insertions(+), 4 deletions(-)
+
+diff --git a/sbin/hastctl/Makefile b/sbin/hastctl/Makefile
+index b58c0669c..e8e8e67be 100644
+--- a/sbin/hastctl/Makefile
++++ b/sbin/hastctl/Makefile
+@@ -13,7 +13,7 @@ SRCS+=	hast_checksum.c hast_compression.c hast_proto.c hastctl.c
+ SRCS+=	lzf.c
+ SRCS+=	metadata.c
+ SRCS+=	nv.c
+-SRCS+=	parse.y pjdlog.c
++SRCS+=	parse.y 
+ SRCS+=	proto.c proto_common.c proto_uds.c
+ SRCS+=	token.l
+ SRCS+=	subr.c
+@@ -33,7 +33,7 @@ CFLAGS+=-DINET6
+ CFLAGS+=-DYY_NO_UNPUT
+ CFLAGS+=-DYY_NO_INPUT
+ 
+-LIBADD=	md util
++LIBADD=	md util pjdlog
+ 
+ YFLAGS+=-v
+ 
+diff --git a/sbin/hastd/Makefile b/sbin/hastd/Makefile
+index 29210cbb1..245a94a1b 100644
+--- a/sbin/hastd/Makefile
++++ b/sbin/hastd/Makefile
+@@ -27,12 +27,11 @@ CFLAGS+=-I${.CURDIR}
+ CFLAGS+=-DHAVE_CAPSICUM
+ CFLAGS+=-DPROTO_TCP_DEFAULT_PORT=8457
+ CFLAGS+=-DINET
+-CFLAGS+=-L/lib/libpjdlog
+ .if ${MK_INET6_SUPPORT} != "no"
+ CFLAGS+=-DINET6
+ .endif
+ 
+-LIBADD=	geom md pthread util
++LIBADD=	geom md pthread util pjdlog
+ 
+ YFLAGS+=-v
+ 
+-- 
+2.20.1
+
+
+From 2c29a7c62c4c522837eb8a990af14b01ee897bc0 Mon Sep 17 00:00:00 2001
+From: Piotr Jamski <piotrj3@gmail.com>
+Date: Fri, 26 Apr 2019 13:27:33 +0200
+Subject: [PATCH 8/9] hastd with all dependencies fixed to buildworld and
+ kernel
+
+---
+ sbin/hastctl/Makefile                      | 1 +
+ sbin/hastd/Makefile                        | 2 ++
+ usr.sbin/bsnmpd/modules/snmp_hast/Makefile | 5 +++--
+ 3 files changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/sbin/hastctl/Makefile b/sbin/hastctl/Makefile
+index e8e8e67be..7f9dd9800 100644
+--- a/sbin/hastctl/Makefile
++++ b/sbin/hastctl/Makefile
+@@ -24,6 +24,7 @@ NO_WFORMAT=
+ NO_WCAST_ALIGN=
+ NO_WMISSING_VARIABLE_DECLARATIONS=
+ CFLAGS+=-I${.CURDIR:H}/hastd
++CFLAGS+=-I${.CURDIR}/../../lib/libpjdlog
+ CFLAGS+=-DHAVE_CAPSICUM
+ CFLAGS+=-DINET
+ .if ${MK_INET6_SUPPORT} != "no"
+diff --git a/sbin/hastd/Makefile b/sbin/hastd/Makefile
+index 245a94a1b..039d55e91 100644
+--- a/sbin/hastd/Makefile
++++ b/sbin/hastd/Makefile
+@@ -24,12 +24,14 @@ NO_WFORMAT=
+ NO_WCAST_ALIGN=
+ NO_WMISSING_VARIABLE_DECLARATIONS=
+ CFLAGS+=-I${.CURDIR}
++
+ CFLAGS+=-DHAVE_CAPSICUM
+ CFLAGS+=-DPROTO_TCP_DEFAULT_PORT=8457
+ CFLAGS+=-DINET
+ .if ${MK_INET6_SUPPORT} != "no"
+ CFLAGS+=-DINET6
+ .endif
++CFLAGS+=-I${.CURDIR}/../../lib/libpjdlog
+ 
+ LIBADD=	geom md pthread util pjdlog
+ 
+diff --git a/usr.sbin/bsnmpd/modules/snmp_hast/Makefile b/usr.sbin/bsnmpd/modules/snmp_hast/Makefile
+index 63c15a5ef..97f270a1e 100644
+--- a/usr.sbin/bsnmpd/modules/snmp_hast/Makefile
++++ b/usr.sbin/bsnmpd/modules/snmp_hast/Makefile
+@@ -9,7 +9,7 @@ SRCS=	ebuf.c
+ SRCS+=	hast_compression.c hast_proto.c hast_snmp.c
+ SRCS+=	lzf.c
+ SRCS+=	nv.c
+-SRCS+=	parse.y pjdlog.c
++SRCS+=	parse.y
+ SRCS+=	proto.c proto_common.c proto_uds.c
+ SRCS+=	token.l
+ SRCS+=	y.tab.h
+@@ -19,6 +19,7 @@ NO_WFORMAT=
+ NO_WCAST_ALIGN=
+ NO_WMISSING_VARIABLE_DECLARATIONS=
+ CFLAGS+=-I${SRCTOP}/sbin/hastd
++CFLAGS+=-I${SRCTOP}/lib/libpjdlog
+ CFLAGS+=-DHAVE_CAPSICUM
+ CFLAGS+=-DINET
+ .if ${MK_INET6_SUPPORT} != "no"
+@@ -28,7 +29,7 @@ CFLAGS+=-DINET6
+ CFLAGS+=-DYY_NO_UNPUT
+ CFLAGS+=-DYY_NO_INPUT
+ 
+-LIBADD=	util
++LIBADD=	util pjdlog
+ 
+ XSYM=	begemotHast
+ DEFS=	${MOD}_tree.def
+-- 
+2.20.1
+
+
+From f1d815b4374217d277e2e3c8935fa4891db3f023 Mon Sep 17 00:00:00 2001
+From: Piotr Jamski <piotrj3@gmail.com>
+Date: Fri, 10 May 2019 14:03:50 +0200
+Subject: [PATCH 9/9] Finish hastd properly
+
+---
+ contrib/openbsm/bin/auditdistd/pjdlog.c | 620 ------------------------
+ contrib/openbsm/bin/auditdistd/pjdlog.h | 117 -----
+ sbin/hastctl/Makefile                   |   2 +-
+ sbin/hastd/Makefile                     |   4 +-
+ 4 files changed, 3 insertions(+), 740 deletions(-)
+ delete mode 100644 contrib/openbsm/bin/auditdistd/pjdlog.c
+ delete mode 100644 contrib/openbsm/bin/auditdistd/pjdlog.h
+
+diff --git a/contrib/openbsm/bin/auditdistd/pjdlog.c b/contrib/openbsm/bin/auditdistd/pjdlog.c
+deleted file mode 100644
+index 66f16597b..000000000
+--- a/contrib/openbsm/bin/auditdistd/pjdlog.c
++++ /dev/null
+@@ -1,620 +0,0 @@
+-/*-
+- * Copyright (c) 2009-2010 The FreeBSD Foundation
+- * Copyright (c) 2011 Pawel Jakub Dawidek <pjd@FreeBSD.org>
+- * All rights reserved.
+- *
+- * This software was developed by Pawel Jakub Dawidek under sponsorship from
+- * the FreeBSD Foundation.
+- *
+- * Redistribution and use in source and binary forms, with or without
+- * modification, are permitted provided that the following conditions
+- * are met:
+- * 1. Redistributions of source code must retain the above copyright
+- *    notice, this list of conditions and the following disclaimer.
+- * 2. Redistributions in binary form must reproduce the above copyright
+- *    notice, this list of conditions and the following disclaimer in the
+- *    documentation and/or other materials provided with the distribution.
+- *
+- * THIS SOFTWARE IS PROVIDED BY THE AUTHORS AND CONTRIBUTORS ``AS IS'' AND
+- * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+- * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHORS OR CONTRIBUTORS BE LIABLE
+- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+- * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+- * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+- * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+- * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+- * SUCH DAMAGE.
+- */
+-
+-#include <sys/types.h>
+-#include <sys/socket.h>
+-#include <netinet/in.h>
+-#include <arpa/inet.h>
+-
+-#include <assert.h>
+-#include <errno.h>
+-#include <stdarg.h>
+-#include <stdint.h>
+-#include <stdio.h>
+-#include <stdlib.h>
+-#include <string.h>
+-#include <syslog.h>
+-#include <unistd.h>
+-
+-#ifdef __FreeBSD__
+-#include <libutil.h>
+-#include <printf.h>
+-#endif
+-
+-#include "pjdlog.h"
+-
+-#define	PJDLOG_NEVER_INITIALIZED	0
+-#define	PJDLOG_NOT_INITIALIZED		1
+-#define	PJDLOG_INITIALIZED		2
+-
+-static int pjdlog_initialized = PJDLOG_NEVER_INITIALIZED;
+-static int pjdlog_mode, pjdlog_debug_level;
+-static char pjdlog_prefix[128];
+-
+-#ifdef __FreeBSD__
+-static int
+-pjdlog_printf_arginfo_humanized_number(const struct printf_info *pi __unused,
+-    size_t n, int *argt)
+-{
+-
+-	assert(n >= 1);
+-	argt[0] = PA_INT | PA_FLAG_INTMAX;
+-	return (1);
+-}
+-
+-static int
+-pjdlog_printf_render_humanized_number(struct __printf_io *io,
+-    const struct printf_info *pi, const void * const *arg)
+-{
+-	char buf[5];
+-	intmax_t num;
+-	int ret;
+-
+-	num = *(const intmax_t *)arg[0];
+-	humanize_number(buf, sizeof(buf), (int64_t)num, "", HN_AUTOSCALE,
+-	    HN_NOSPACE | HN_DECIMAL);
+-	ret = __printf_out(io, pi, buf, strlen(buf));
+-	__printf_flush(io);
+-	return (ret);
+-}
+-
+-static int
+-pjdlog_printf_arginfo_sockaddr(const struct printf_info *pi __unused,
+-    size_t n, int *argt)
+-{
+-
+-	assert(n >= 1);
+-	argt[0] = PA_POINTER;
+-	return (1);
+-}
+-
+-static int
+-pjdlog_printf_render_sockaddr(struct __printf_io *io,
+-    const struct printf_info *pi, const void * const *arg)
+-{
+-	const struct sockaddr_storage *ss;
+-	char buf[64];
+-	int ret;
+-
+-	ss = *(const struct sockaddr_storage * const *)arg[0];
+-	switch (ss->ss_family) {
+-	case AF_INET:
+-	    {
+-		char addr[INET_ADDRSTRLEN];
+-		const struct sockaddr_in *sin;
+-		unsigned int port;
+-
+-		sin = (const struct sockaddr_in *)ss;
+-		port = ntohs(sin->sin_port);
+-		if (inet_ntop(ss->ss_family, &sin->sin_addr, addr,
+-		    sizeof(addr)) == NULL) {
+-			PJDLOG_ABORT("inet_ntop(AF_INET) failed: %s.",
+-			    strerror(errno));
+-		}
+-		snprintf(buf, sizeof(buf), "%s:%u", addr, port);
+-		break;
+-	    }
+-	case AF_INET6:
+-	    {
+-		char addr[INET6_ADDRSTRLEN];
+-		const struct sockaddr_in6 *sin;
+-		unsigned int port;
+-
+-		sin = (const struct sockaddr_in6 *)ss;
+-		port = ntohs(sin->sin6_port);
+-		if (inet_ntop(ss->ss_family, &sin->sin6_addr, addr,
+-		    sizeof(addr)) == NULL) {
+-			PJDLOG_ABORT("inet_ntop(AF_INET6) failed: %s.",
+-			    strerror(errno));
+-		}
+-		snprintf(buf, sizeof(buf), "[%s]:%u", addr, port);
+-		break;
+-	    }
+-	default:
+-		snprintf(buf, sizeof(buf), "[unsupported family %hhu]",
+-		    ss->ss_family);
+-		break;
+-	}
+-	ret = __printf_out(io, pi, buf, strlen(buf));
+-	__printf_flush(io);
+-	return (ret);
+-}
+-#endif	/* __FreeBSD__ */
+-
+-void
+-pjdlog_init(int mode)
+-{
+-	int saved_errno;
+-
+-	assert(pjdlog_initialized == PJDLOG_NEVER_INITIALIZED ||
+-	    pjdlog_initialized == PJDLOG_NOT_INITIALIZED);
+-	assert(mode == PJDLOG_MODE_STD || mode == PJDLOG_MODE_SYSLOG);
+-
+-	saved_errno = errno;
+-
+-	if (pjdlog_initialized == PJDLOG_NEVER_INITIALIZED) {
+-#ifdef __FreeBSD__
+-		__use_xprintf = 1;
+-		register_printf_render_std("T");
+-		register_printf_render('N',
+-		    pjdlog_printf_render_humanized_number,
+-		    pjdlog_printf_arginfo_humanized_number);
+-		register_printf_render('S',
+-		    pjdlog_printf_render_sockaddr,
+-		    pjdlog_printf_arginfo_sockaddr);
+-#endif
+-	}
+-
+-	if (mode == PJDLOG_MODE_SYSLOG)
+-		openlog(NULL, LOG_PID | LOG_NDELAY, LOG_DAEMON);
+-	pjdlog_mode = mode;
+-	pjdlog_debug_level = 0;
+-	bzero(pjdlog_prefix, sizeof(pjdlog_prefix));
+-
+-	pjdlog_initialized = PJDLOG_INITIALIZED;
+-
+-	errno = saved_errno;
+-}
+-
+-void
+-pjdlog_fini(void)
+-{
+-	int saved_errno;
+-
+-	assert(pjdlog_initialized == PJDLOG_INITIALIZED);
+-
+-	saved_errno = errno;
+-
+-	if (pjdlog_mode == PJDLOG_MODE_SYSLOG)
+-		closelog();
+-
+-	pjdlog_initialized = PJDLOG_NOT_INITIALIZED;
+-
+-	errno = saved_errno;
+-}
+-
+-/*
+- * Configure where the logs should go.
+- * By default they are send to stdout/stderr, but after going into background
+- * (eg. by calling daemon(3)) application is responsible for changing mode to
+- * PJDLOG_MODE_SYSLOG, so logs will be send to syslog.
+- */
+-void
+-pjdlog_mode_set(int mode)
+-{
+-	int saved_errno;
+-
+-	assert(pjdlog_initialized == PJDLOG_INITIALIZED);
+-	assert(mode == PJDLOG_MODE_STD || mode == PJDLOG_MODE_SYSLOG);
+-
+-	if (pjdlog_mode == mode)
+-		return;
+-
+-	saved_errno = errno;
+-
+-	if (mode == PJDLOG_MODE_SYSLOG)
+-		openlog(NULL, LOG_PID | LOG_NDELAY, LOG_DAEMON);
+-	else /* if (mode == PJDLOG_MODE_STD) */
+-		closelog();
+-
+-	pjdlog_mode = mode;
+-
+-	errno = saved_errno;
+-}
+-
+-/*
+- * Return current mode.
+- */
+-int
+-pjdlog_mode_get(void)
+-{
+-
+-	assert(pjdlog_initialized == PJDLOG_INITIALIZED);
+-
+-	return (pjdlog_mode);
+-}
+-
+-/*
+- * Set debug level. All the logs above the level specified here will be
+- * ignored.
+- */
+-void
+-pjdlog_debug_set(int level)
+-{
+-
+-	assert(pjdlog_initialized == PJDLOG_INITIALIZED);
+-	assert(level >= 0);
+-
+-	pjdlog_debug_level = level;
+-}
+-
+-/*
+- * Return current debug level.
+- */
+-int
+-pjdlog_debug_get(void)
+-{
+-
+-	assert(pjdlog_initialized == PJDLOG_INITIALIZED);
+-
+-	return (pjdlog_debug_level);
+-}
+-
+-/*
+- * Set prefix that will be used before each log.
+- * Setting prefix to NULL will remove it.
+- */
+-void
+-pjdlog_prefix_set(const char *fmt, ...)
+-{
+-	va_list ap;
+-
+-	assert(pjdlog_initialized == PJDLOG_INITIALIZED);
+-
+-	va_start(ap, fmt);
+-	pjdlogv_prefix_set(fmt, ap);
+-	va_end(ap);
+-}
+-
+-/*
+- * Set prefix that will be used before each log.
+- * Setting prefix to NULL will remove it.
+- */
+-void
+-pjdlogv_prefix_set(const char *fmt, va_list ap)
+-{
+-	int saved_errno;
+-
+-	assert(pjdlog_initialized == PJDLOG_INITIALIZED);
+-	assert(fmt != NULL);
+-
+-	saved_errno = errno;
+-
+-	vsnprintf(pjdlog_prefix, sizeof(pjdlog_prefix), fmt, ap);
+-
+-	errno = saved_errno;
+-}
+-
+-/*
+- * Convert log level into string.
+- */
+-static const char *
+-pjdlog_level_string(int loglevel)
+-{
+-
+-	switch (loglevel) {
+-	case LOG_EMERG:
+-		return ("EMERG");
+-	case LOG_ALERT:
+-		return ("ALERT");
+-	case LOG_CRIT:
+-		return ("CRIT");
+-	case LOG_ERR:
+-		return ("ERROR");
+-	case LOG_WARNING:
+-		return ("WARNING");
+-	case LOG_NOTICE:
+-		return ("NOTICE");
+-	case LOG_INFO:
+-		return ("INFO");
+-	case LOG_DEBUG:
+-		return ("DEBUG");
+-	}
+-	assert(!"Invalid log level.");
+-	abort();	/* XXX: gcc */
+-}
+-
+-/*
+- * Common log routine.
+- */
+-void
+-pjdlog_common(int loglevel, int debuglevel, int error, const char *fmt, ...)
+-{
+-	va_list ap;
+-
+-	assert(pjdlog_initialized == PJDLOG_INITIALIZED);
+-
+-	va_start(ap, fmt);
+-	pjdlogv_common(loglevel, debuglevel, error, fmt, ap);
+-	va_end(ap);
+-}
+-
+-/*
+- * Common log routine, which can handle regular log level as well as debug
+- * level. We decide here where to send the logs (stdout/stderr or syslog).
+- */
+-void
+-pjdlogv_common(int loglevel, int debuglevel, int error, const char *fmt,
+-    va_list ap)
+-{
+-	int saved_errno;
+-
+-	assert(pjdlog_initialized == PJDLOG_INITIALIZED);
+-	assert(loglevel == LOG_EMERG || loglevel == LOG_ALERT ||
+-	    loglevel == LOG_CRIT || loglevel == LOG_ERR ||
+-	    loglevel == LOG_WARNING || loglevel == LOG_NOTICE ||
+-	    loglevel == LOG_INFO || loglevel == LOG_DEBUG);
+-	assert(loglevel != LOG_DEBUG || debuglevel > 0);
+-	assert(error >= -1);
+-
+-	/* Ignore debug above configured level. */
+-	if (loglevel == LOG_DEBUG && debuglevel > pjdlog_debug_level)
+-		return;
+-
+-	saved_errno = errno;
+-
+-	switch (pjdlog_mode) {
+-	case PJDLOG_MODE_STD:
+-	    {
+-		FILE *out;
+-
+-		/*
+-		 * We send errors and warning to stderr and the rest to stdout.
+-		 */
+-		switch (loglevel) {
+-		case LOG_EMERG:
+-		case LOG_ALERT:
+-		case LOG_CRIT:
+-		case LOG_ERR:
+-		case LOG_WARNING:
+-			out = stderr;
+-			break;
+-		case LOG_NOTICE:
+-		case LOG_INFO:
+-		case LOG_DEBUG:
+-			out = stdout;
+-			break;
+-		default:
+-			assert(!"Invalid loglevel.");
+-			abort();	/* XXX: gcc */
+-		}
+-
+-		fprintf(out, "(%d) ", getpid());
+-		fprintf(out, "[%s]", pjdlog_level_string(loglevel));
+-		/* Attach debuglevel if this is debug log. */
+-		if (loglevel == LOG_DEBUG)
+-			fprintf(out, "[%d]", debuglevel);
+-		fprintf(out, " %s", pjdlog_prefix);
+-		vfprintf(out, fmt, ap);
+-		if (error != -1)
+-			fprintf(out, ": %s.", strerror(error));
+-		fprintf(out, "\n");
+-		fflush(out);
+-		break;
+-	    }
+-	case PJDLOG_MODE_SYSLOG:
+-	    {
+-		char log[1024];
+-		int len;
+-
+-		len = snprintf(log, sizeof(log), "%s", pjdlog_prefix);
+-		if ((size_t)len < sizeof(log))
+-			len += vsnprintf(log + len, sizeof(log) - len, fmt, ap);
+-		if (error != -1 && (size_t)len < sizeof(log)) {
+-			(void)snprintf(log + len, sizeof(log) - len, ": %s.",
+-			    strerror(error));
+-		}
+-		syslog(loglevel, "%s", log);
+-		break;
+-	    }
+-	default:
+-		assert(!"Invalid mode.");
+-	}
+-
+-	errno = saved_errno;
+-}
+-
+-/*
+- * Regular logs.
+- */
+-void
+-pjdlogv(int loglevel, const char *fmt, va_list ap)
+-{
+-
+-	assert(pjdlog_initialized == PJDLOG_INITIALIZED);
+-
+-	/* LOG_DEBUG is invalid here, pjdlogv?_debug() should be used. */
+-	assert(loglevel == LOG_EMERG || loglevel == LOG_ALERT ||
+-	    loglevel == LOG_CRIT || loglevel == LOG_ERR ||
+-	    loglevel == LOG_WARNING || loglevel == LOG_NOTICE ||
+-	    loglevel == LOG_INFO);
+-
+-	pjdlogv_common(loglevel, 0, -1, fmt, ap);
+-}
+-
+-/*
+- * Regular logs.
+- */
+-void
+-pjdlog(int loglevel, const char *fmt, ...)
+-{
+-	va_list ap;
+-
+-	assert(pjdlog_initialized == PJDLOG_INITIALIZED);
+-
+-	va_start(ap, fmt);
+-	pjdlogv(loglevel, fmt, ap);
+-	va_end(ap);
+-}
+-
+-/*
+- * Debug logs.
+- */
+-void
+-pjdlogv_debug(int debuglevel, const char *fmt, va_list ap)
+-{
+-
+-	assert(pjdlog_initialized == PJDLOG_INITIALIZED);
+-
+-	pjdlogv_common(LOG_DEBUG, debuglevel, -1, fmt, ap);
+-}
+-
+-/*
+- * Debug logs.
+- */
+-void
+-pjdlog_debug(int debuglevel, const char *fmt, ...)
+-{
+-	va_list ap;
+-
+-	assert(pjdlog_initialized == PJDLOG_INITIALIZED);
+-
+-	va_start(ap, fmt);
+-	pjdlogv_debug(debuglevel, fmt, ap);
+-	va_end(ap);
+-}
+-
+-/*
+- * Error logs with errno logging.
+- */
+-void
+-pjdlogv_errno(int loglevel, const char *fmt, va_list ap)
+-{
+-
+-	assert(pjdlog_initialized == PJDLOG_INITIALIZED);
+-
+-	pjdlogv_common(loglevel, 0, errno, fmt, ap);
+-}
+-
+-/*
+- * Error logs with errno logging.
+- */
+-void
+-pjdlog_errno(int loglevel, const char *fmt, ...)
+-{
+-	va_list ap;
+-
+-	assert(pjdlog_initialized == PJDLOG_INITIALIZED);
+-
+-	va_start(ap, fmt);
+-	pjdlogv_errno(loglevel, fmt, ap);
+-	va_end(ap);
+-}
+-
+-/*
+- * Log error, errno and exit.
+- */
+-void
+-pjdlogv_exit(int exitcode, const char *fmt, va_list ap)
+-{
+-
+-	assert(pjdlog_initialized == PJDLOG_INITIALIZED);
+-
+-	pjdlogv_errno(LOG_ERR, fmt, ap);
+-	exit(exitcode);
+-	/* NOTREACHED */
+-}
+-
+-/*
+- * Log error, errno and exit.
+- */
+-void
+-pjdlog_exit(int exitcode, const char *fmt, ...)
+-{
+-	va_list ap;
+-
+-	assert(pjdlog_initialized == PJDLOG_INITIALIZED);
+-
+-	va_start(ap, fmt);
+-	pjdlogv_exit(exitcode, fmt, ap);
+-	/* NOTREACHED */
+-	va_end(ap);
+-}
+-
+-/*
+- * Log error and exit.
+- */
+-void
+-pjdlogv_exitx(int exitcode, const char *fmt, va_list ap)
+-{
+-
+-	assert(pjdlog_initialized == PJDLOG_INITIALIZED);
+-
+-	pjdlogv(LOG_ERR, fmt, ap);
+-	exit(exitcode);
+-	/* NOTREACHED */
+-}
+-
+-/*
+- * Log error and exit.
+- */
+-void
+-pjdlog_exitx(int exitcode, const char *fmt, ...)
+-{
+-	va_list ap;
+-
+-	assert(pjdlog_initialized == PJDLOG_INITIALIZED);
+-
+-	va_start(ap, fmt);
+-	pjdlogv_exitx(exitcode, fmt, ap);
+-	/* NOTREACHED */
+-	va_end(ap);
+-}
+-
+-/*
+- * Log failure message and exit.
+- */
+-void
+-pjdlog_abort(const char *func, const char *file, int line,
+-    const char *failedexpr, const char *fmt, ...)
+-{
+-	va_list ap;
+-
+-	assert(pjdlog_initialized == PJDLOG_INITIALIZED);
+-
+-	/*
+-	 * When there is no message we pass __func__ as 'fmt'.
+-	 * It would be cleaner to pass NULL or "", but gcc generates a warning
+-	 * for both of those.
+-	 */
+-	if (fmt != func) {
+-		va_start(ap, fmt);
+-		pjdlogv_critical(fmt, ap);
+-		va_end(ap);
+-	}
+-	if (failedexpr == NULL) {
+-		if (func == NULL) {
+-			pjdlog_critical("Aborted at file %s, line %d.", file,
+-			    line);
+-		} else {
+-			pjdlog_critical("Aborted at function %s, file %s, line %d.",
+-			    func, file, line);
+-		}
+-	} else {
+-		if (func == NULL) {
+-			pjdlog_critical("Assertion failed: (%s), file %s, line %d.",
+-			    failedexpr, file, line);
+-		} else {
+-			pjdlog_critical("Assertion failed: (%s), function %s, file %s, line %d.",
+-			    failedexpr, func, file, line);
+-		}
+-	}
+-	abort();
+-}
+diff --git a/contrib/openbsm/bin/auditdistd/pjdlog.h b/contrib/openbsm/bin/auditdistd/pjdlog.h
+deleted file mode 100644
+index d6f217f23..000000000
+--- a/contrib/openbsm/bin/auditdistd/pjdlog.h
++++ /dev/null
+@@ -1,117 +0,0 @@
+-/*-
+- * Copyright (c) 2009-2010 The FreeBSD Foundation
+- * Copyright (c) 2011 Pawel Jakub Dawidek <pjd@FreeBSD.org>
+- * All rights reserved.
+- *
+- * This software was developed by Pawel Jakub Dawidek under sponsorship from
+- * the FreeBSD Foundation.
+- *
+- * Redistribution and use in source and binary forms, with or without
+- * modification, are permitted provided that the following conditions
+- * are met:
+- * 1. Redistributions of source code must retain the above copyright
+- *    notice, this list of conditions and the following disclaimer.
+- * 2. Redistributions in binary form must reproduce the above copyright
+- *    notice, this list of conditions and the following disclaimer in the
+- *    documentation and/or other materials provided with the distribution.
+- *
+- * THIS SOFTWARE IS PROVIDED BY THE AUTHORS AND CONTRIBUTORS ``AS IS'' AND
+- * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+- * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHORS OR CONTRIBUTORS BE LIABLE
+- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+- * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+- * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+- * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+- * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+- * SUCH DAMAGE.
+- */
+-
+-#ifndef	_PJDLOG_H_
+-#define	_PJDLOG_H_
+-
+-#include <sys/cdefs.h>
+-
+-#include <stdarg.h>
+-#include <sysexits.h>
+-#include <syslog.h>
+-
+-#include <compat/compat.h>
+-
+-#define	PJDLOG_MODE_STD		0
+-#define	PJDLOG_MODE_SYSLOG	1
+-
+-void pjdlog_init(int mode);
+-void pjdlog_fini(void);
+-
+-void pjdlog_mode_set(int mode);
+-int pjdlog_mode_get(void);
+-
+-void pjdlog_debug_set(int level);
+-int pjdlog_debug_get(void);
+-
+-void pjdlog_prefix_set(const char *fmt, ...) __printflike(1, 2);
+-void pjdlogv_prefix_set(const char *fmt, va_list ap) __printflike(1, 0);
+-
+-void pjdlog_common(int loglevel, int debuglevel, int error, const char *fmt,
+-    ...) __printflike(4, 5);
+-void pjdlogv_common(int loglevel, int debuglevel, int error, const char *fmt,
+-    va_list ap) __printflike(4, 0);
+-
+-void pjdlog(int loglevel, const char *fmt, ...) __printflike(2, 3);
+-void pjdlogv(int loglevel, const char *fmt, va_list ap) __printflike(2, 0);
+-
+-#define	pjdlogv_emergency(fmt, ap)	pjdlogv(LOG_EMERG, (fmt), (ap))
+-#define	pjdlog_emergency(...)		pjdlog(LOG_EMERG, __VA_ARGS__)
+-#define	pjdlogv_alert(fmt, ap)		pjdlogv(LOG_ALERT, (fmt), (ap))
+-#define	pjdlog_alert(...)		pjdlog(LOG_ALERT, __VA_ARGS__)
+-#define	pjdlogv_critical(fmt, ap)	pjdlogv(LOG_CRIT, (fmt), (ap))
+-#define	pjdlog_critical(...)		pjdlog(LOG_CRIT, __VA_ARGS__)
+-#define	pjdlogv_error(fmt, ap)		pjdlogv(LOG_ERR, (fmt), (ap))
+-#define	pjdlog_error(...)		pjdlog(LOG_ERR, __VA_ARGS__)
+-#define	pjdlogv_warning(fmt, ap)	pjdlogv(LOG_WARNING, (fmt), (ap))
+-#define	pjdlog_warning(...)		pjdlog(LOG_WARNING, __VA_ARGS__)
+-#define	pjdlogv_notice(fmt, ap)		pjdlogv(LOG_NOTICE, (fmt), (ap))
+-#define	pjdlog_notice(...)		pjdlog(LOG_NOTICE, __VA_ARGS__)
+-#define	pjdlogv_info(fmt, ap)		pjdlogv(LOG_INFO, (fmt), (ap))
+-#define	pjdlog_info(...)		pjdlog(LOG_INFO, __VA_ARGS__)
+-
+-void pjdlog_debug(int debuglevel, const char *fmt, ...) __printflike(2, 3);
+-void pjdlogv_debug(int debuglevel, const char *fmt, va_list ap) __printflike(2, 0);
+-
+-void pjdlog_errno(int loglevel, const char *fmt, ...) __printflike(2, 3);
+-void pjdlogv_errno(int loglevel, const char *fmt, va_list ap) __printflike(2, 0);
+-
+-void pjdlog_exit(int exitcode, const char *fmt, ...) __printflike(2, 3) __dead2;
+-void pjdlogv_exit(int exitcode, const char *fmt, va_list ap) __printflike(2, 0) __dead2;
+-
+-void pjdlog_exitx(int exitcode, const char *fmt, ...) __printflike(2, 3) __dead2;
+-void pjdlogv_exitx(int exitcode, const char *fmt, va_list ap) __printflike(2, 0) __dead2;
+-
+-void pjdlog_abort(const char *func, const char *file, int line,
+-    const char *failedexpr, const char *fmt, ...) __printflike(5, 6) __dead2;
+-
+-#define	PJDLOG_VERIFY(expr)	do {					\
+-	if (!(expr)) {							\
+-		pjdlog_abort(__func__, __FILE__, __LINE__, #expr,	\
+-		    "%s", __func__);					\
+-	}								\
+-} while (0)
+-#define	PJDLOG_RVERIFY(expr, ...)	do {				\
+-	if (!(expr)) {							\
+-		pjdlog_abort(__func__, __FILE__, __LINE__, #expr,	\
+-		    __VA_ARGS__);					\
+-	}								\
+-} while (0)
+-#define	PJDLOG_ABORT(...)	pjdlog_abort(__func__, __FILE__,	\
+-				    __LINE__, NULL, __VA_ARGS__)
+-#ifdef NDEBUG
+-#define	PJDLOG_ASSERT(expr)	do { } while (0)
+-#define	PJDLOG_RASSERT(...)	do { } while (0)
+-#else
+-#define	PJDLOG_ASSERT(expr)	PJDLOG_VERIFY(expr)
+-#define	PJDLOG_RASSERT(...)	PJDLOG_RVERIFY(__VA_ARGS__)
+-#endif
+-
+-#endif	/* !_PJDLOG_H_ */
+diff --git a/sbin/hastctl/Makefile b/sbin/hastctl/Makefile
+index 7f9dd9800..a4ac60e37 100644
+--- a/sbin/hastctl/Makefile
++++ b/sbin/hastctl/Makefile
+@@ -24,7 +24,7 @@ NO_WFORMAT=
+ NO_WCAST_ALIGN=
+ NO_WMISSING_VARIABLE_DECLARATIONS=
+ CFLAGS+=-I${.CURDIR:H}/hastd
+-CFLAGS+=-I${.CURDIR}/../../lib/libpjdlog
++CFLAGS+=-I${SRCTOP}/lib/libpjdlog
+ CFLAGS+=-DHAVE_CAPSICUM
+ CFLAGS+=-DINET
+ .if ${MK_INET6_SUPPORT} != "no"
+diff --git a/sbin/hastd/Makefile b/sbin/hastd/Makefile
+index 039d55e91..5eaab90df 100644
+--- a/sbin/hastd/Makefile
++++ b/sbin/hastd/Makefile
+@@ -24,14 +24,14 @@ NO_WFORMAT=
+ NO_WCAST_ALIGN=
+ NO_WMISSING_VARIABLE_DECLARATIONS=
+ CFLAGS+=-I${.CURDIR}
+-
++CFLAGS+=-I${SRCTOP}/lib/libpjdlog
+ CFLAGS+=-DHAVE_CAPSICUM
+ CFLAGS+=-DPROTO_TCP_DEFAULT_PORT=8457
+ CFLAGS+=-DINET
+ .if ${MK_INET6_SUPPORT} != "no"
+ CFLAGS+=-DINET6
+ .endif
+-CFLAGS+=-I${.CURDIR}/../../lib/libpjdlog
++
+ 
+ LIBADD=	geom md pthread util pjdlog
+ 
+-- 
+2.20.1
+
